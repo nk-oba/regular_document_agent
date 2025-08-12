@@ -1,16 +1,16 @@
-FROM python:3.11-slim
-
+FROM python:3.13-slim
 WORKDIR /app
 
-# 依存関係のインストール
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# アプリケーションコードのコピー
+RUN adduser --disabled-password --gecos "" myuser && \
+    chown -R myuser:myuser /app
+
 COPY . .
 
-# ポート8000を公開
-EXPOSE 8000
+USER myuser
 
-# アプリケーションの起動
-CMD ["python", "main.py"] 
+ENV PATH="/home/myuser/.local/bin:$PATH"
+
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port $PORT"]
