@@ -180,14 +180,16 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
             data = await websocket.receive_text()
             message_data = json.loads(data)
             user_message = message_data.get('message', '')
+            selected_agent = message_data.get('selectedAgent', 'document_creating_agent')
             
             try:
                 import requests
                 import os
                 
                 print(f"Received message: {user_message}")
+                print(f"Selected agent: {selected_agent}")
                 
-                app_name = "document_creating_agent"
+                app_name = selected_agent
                 user_id = f"user_{client_id}"
                 session_id = f"session_{client_id}"
                 
