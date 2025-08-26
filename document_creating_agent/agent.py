@@ -26,13 +26,13 @@ ad_agency = LlmAgent(
     ),
     instruction=prompt.AD_REPORT_PROMPT,
     sub_agents=[
-        ad_analyzer_agent,
         playwright_agent,
-        slide_agent,
+        ad_analyzer_agent,
+        # slide_agent,
     ],
     tools=[
         load_artifacts, 
-        # *get_tools(),
+        *get_tools(),
     ],
     generate_content_config=types.GenerateContentConfig(temperature=0.01),
 )

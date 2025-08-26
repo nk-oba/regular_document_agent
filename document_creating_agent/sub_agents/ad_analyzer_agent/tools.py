@@ -1,7 +1,6 @@
 import logging
 
 def get_tools():
-    # 一時的にツールを無効化してエラーを回避
     try:
         from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
         from google.adk.tools.mcp_tool import StreamableHTTPConnectionParams

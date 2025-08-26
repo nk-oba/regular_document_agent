@@ -49,7 +49,6 @@ class AgentResponseHandler:
         for event in events:
             print(f"Processing event: {event}")
             
-            # Contentイベントの処理
             if isinstance(event, dict):
                 if "content" in event:
                     content = event["content"]
@@ -59,12 +58,10 @@ class AgentResponseHandler:
                                 agent_message = part["text"]
                                 return agent_message
                 
-                # 直接textを含むイベント
                 elif "text" in event:
                     agent_message = event["text"]
                     return agent_message
                 
-                # messageフィールドを含むイベント
                 elif "message" in event:
                     agent_message = event["message"]
                     return agent_message
@@ -216,7 +213,6 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
                         print(f"DEBUG: Session creation status: {session_response.status_code}")
                         print(f"DEBUG: Session response: {session_response.text[:200]}...")
                         
-                        # セッションが既に存在する場合(400)は正常として処理を続行
                         if session_response.status_code not in [200, 400]:
                             print(f"DEBUG: Session creation failed with status {session_response.status_code}")
                             use_real_agent = False
@@ -229,7 +225,6 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
                         use_real_agent = False
                     
                     if use_real_agent:
-                        # エージェント実行
                         agent_request = {
                             "appName": app_name,
                             "userId": user_id,
@@ -269,7 +264,6 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
                             traceback.print_exc()
                             use_real_agent = False
                 
-                # フォールバック: スマート応答システム
                 if not use_real_agent:
                     print("Using fallback smart response system")
                     agent_message = handler.generate_smart_response(user_message)
