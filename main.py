@@ -178,6 +178,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
             message_data = json.loads(data)
             user_message = message_data.get('message', '')
             selected_agent = message_data.get('selectedAgent', 'document_creating_agent')
+            frontend_session_id = message_data.get('sessionId')
             
             try:
                 import requests
@@ -185,10 +186,13 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
                 
                 print(f"Received message: {user_message}")
                 print(f"Selected agent: {selected_agent}")
+                print(f"Frontend session_id: {frontend_session_id}")
                 
                 app_name = selected_agent
                 user_id = f"user_{client_id}"
-                session_id = f"session_{client_id}"
+                # フロントエンドからのsession_idを使用、なければフォールバック
+                session_id = frontend_session_id or f"session_{client_id}"
+                print(f"Using session_id: {session_id}")
                 
                 # Google API KEYがない場合はフォールバック機能を使用
                 api_key = os.getenv("GOOGLE_API_KEY")
