@@ -49,6 +49,8 @@ async def auth_middleware(request: Request, call_next):
         "/auth/mcp-ada/status",
         "/auth/mcp-ada/start",
         "/auth/mcp-ada/logout",
+        "/auth/mcp-ada/callback",
+        "/static",
         "/docs",
         "/redoc",
         "/openapi.json",

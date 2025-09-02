@@ -4,7 +4,7 @@ from google.adk.cli.fast_api import get_fast_api_app
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from middleware import auth_middleware
 from google.adk.artifacts import InMemoryArtifactService
@@ -78,8 +78,18 @@ except Exception as e:
 # 認証ミドルウェアを追加（CORSより前に）
 app.middleware("http")(auth_middleware)
 
-# 静的ファイルの設定（MCP ADA認証コールバック用）
-app.mount("/static", StaticFiles(directory=".."), name="static")
+# MCP ADA認証コールバック用のHTMLエンドポイント
+@app.get("/static/mcp_ada_callback.html", response_class=HTMLResponse)
+async def mcp_ada_callback_html():
+    """MCP ADA認証コールバック用のHTMLページ"""
+    try:
+        with open("mcp_ada_callback.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>MCP ADA Callback page not found</h1>", status_code=404)
+
+# 静的ファイルの設定（その他の静的ファイル用）
+app.mount("/static", StaticFiles(directory="."), name="static")
 
 # CORS設定を最後に適用してget_fast_api_appの設定を上書き
 app.add_middleware(
