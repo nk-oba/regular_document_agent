@@ -26,7 +26,9 @@ ALLOWED_ORIGINS = [
     "http://localhost:3000", 
     "http://127.0.0.1:8001", 
     "http://localhost:8001",
-    "*"
+    "http://localhost:5173",  # Vite dev server
+    "http://127.0.0.1:5173",  # Vite dev server
+    "*"  # すべてを許可（開発環境用）
 ]
 SERVE_WEB_INTERFACE = True
 
@@ -345,6 +347,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
         traceback.print_exc()
         manager.disconnect(websocket)
 
+# CORS設定を最後に適用してget_fast_api_appの設定を上書き
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -352,6 +355,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# デバッグ用: CORS設定を確認
+logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
+
+# 手動でOPTIONSリクエストに対応
+@app.options("/{path:path}")
+async def options_handler():
+    return {"message": "OK"}
 
 if __name__ == "__main__":
     logger.info("Starting application...")
