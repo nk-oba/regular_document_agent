@@ -14,7 +14,7 @@ from .sub_agents.slide_agent import slide_agent
 from .tools import get_tools
 
 # state keys
-STATE_INITAIL = "initial_info"
+STATE_INITIAL = "initial_info"
 STATE_AD_DATA = "ad_data"
 STATE_PLAYWRIGHT_DOC = "current_doc"
 
@@ -66,7 +66,7 @@ ad_agency = LlmAgent(
     sub_agents=sub_agents,
     tools=tools,
     generate_content_config=types.GenerateContentConfig(temperature=0.01),
-    output_key=STATE_INITAIL,
+    output_key=STATE_INITIAL,
 )
 
 root_agent = ad_agency

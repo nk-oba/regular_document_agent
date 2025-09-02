@@ -26,8 +26,6 @@ ARTIFACT_URL = "gs://dev-datap-agent-bucket"
 ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000", 
     "http://localhost:3000", 
-    "http://127.0.0.1:3001", 
-    "http://localhost:3001",
     "http://127.0.0.1:8000", 
     "http://localhost:8000",
     "http://localhost:5173",
@@ -138,7 +136,7 @@ async def oauth_callback(code: str = None, error: str = None):
 # Google OAuth2.0認証ステータス確認エンドポイント
 @app.get("/auth/status")
 async def auth_status():
-    """現在の認証ステータスを確認"""
+    """現在の認証ステータスを確認（認証フローは開始しない）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
@@ -146,39 +144,15 @@ async def auth_status():
         
         auth_manager = get_auth_manager()
         
-        # 既存の認証情報をチェック
-        existing_token = auth_manager.get_access_token()
-        if existing_token:
-            # ユーザー情報を取得
-            credentials = auth_manager._load_credentials()
-            if credentials:
-                try:
-                    from google.oauth2.credentials import Credentials
-                    from googleapiclient.discovery import build
-                    
-                    # Google User Info APIでユーザー情報を取得
-                    service = build('oauth2', 'v2', credentials=credentials)
-                    user_info = service.userinfo().get().execute()
-                    
-                    return {
-                        "authenticated": True,
-                        "user": {
-                            "id": user_info.get("id"),
-                            "email": user_info.get("email"),
-                            "name": user_info.get("name", user_info.get("email", "Unknown"))
-                        }
-                    }
-                except Exception as e:
-                    logger.warning(f"Failed to get user info: {e}")
-                    return {
-                        "authenticated": True,
-                        "user": {
-                            "id": "unknown",
-                            "email": "unknown@example.com",
-                            "name": "認証済みユーザー"
-                        }
-                    }
-            
+        # 認証状態のみをチェック（認証フローは開始しない）
+        is_authenticated, user_info = auth_manager.check_auth_status()
+        
+        if is_authenticated and user_info:
+            return {
+                "authenticated": True,
+                "user": user_info
+            }
+        
         return {"authenticated": False}
         
     except Exception as e:
@@ -214,9 +188,9 @@ async def start_oauth():
         
         auth_manager = get_auth_manager()
         
-        # 既存の認証情報をチェック
-        existing_token = auth_manager.get_access_token()
-        if existing_token:
+        # 既存の認証情報をチェック（認証フローは開始しない）
+        is_authenticated, user_info = auth_manager.check_auth_status()
+        if is_authenticated:
             return {
                 "success": True,
                 "message": "Already authenticated",
@@ -250,6 +224,90 @@ async def start_oauth():
     except Exception as e:
         logger.error(f"OAuth start error: {e}")
         return {"error": f"Failed to start authentication: {str(e)}"}
+
+# MCP ADA認証ステータス確認エンドポイント
+@app.get("/auth/mcp-ada/status")
+async def mcp_ada_auth_status():
+    """MCP ADA認証ステータスを確認"""
+    try:
+        import sys
+        sys.path.append(os.path.dirname(__file__))
+        from auth.mcp_ada_auth import get_mcp_ada_auth_manager
+        
+        auth_manager = get_mcp_ada_auth_manager()
+        
+        # 既存の認証情報をチェック
+        existing_token = auth_manager.get_access_token()
+        if existing_token:
+            return {
+                "authenticated": True,
+                "service": "MCP ADA",
+                "scopes": auth_manager.scopes
+            }
+            
+        return {"authenticated": False, "service": "MCP ADA"}
+        
+    except Exception as e:
+        logger.error(f"MCP ADA auth status check error: {e}")
+        return {"authenticated": False, "service": "MCP ADA", "error": str(e)}
+
+# MCP ADA認証開始エンドポイント
+@app.get("/auth/mcp-ada/start")
+async def start_mcp_ada_oauth():
+    """MCP ADA OAuth2.0認証を開始"""
+    try:
+        import sys
+        sys.path.append(os.path.dirname(__file__))
+        from auth.mcp_ada_auth import get_mcp_ada_auth_manager
+        
+        auth_manager = get_mcp_ada_auth_manager()
+        
+        # 既存の認証情報をチェック
+        existing_token = auth_manager.get_access_token()
+        if existing_token:
+            return {
+                "success": True,
+                "message": "Already authenticated with MCP ADA",
+                "authenticated": True
+            }
+        
+        # 認証フローを開始（対話型）
+        access_token = auth_manager.get_access_token()
+        
+        if access_token:
+            return {
+                "success": True,
+                "message": "MCP ADA authentication completed successfully",
+                "authenticated": True
+            }
+        else:
+            return {
+                "success": False,
+                "message": "MCP ADA authentication failed or was cancelled",
+                "authenticated": False
+            }
+        
+    except Exception as e:
+        logger.error(f"MCP ADA OAuth start error: {e}")
+        return {"error": f"Failed to start MCP ADA authentication: {str(e)}"}
+
+# MCP ADA認証ログアウトエンドポイント
+@app.post("/auth/mcp-ada/logout")
+async def mcp_ada_logout():
+    """MCP ADA認証情報をクリア"""
+    try:
+        import sys
+        sys.path.append(os.path.dirname(__file__))
+        from auth.mcp_ada_auth import get_mcp_ada_auth_manager
+        
+        auth_manager = get_mcp_ada_auth_manager()
+        auth_manager.revoke_credentials()
+        
+        return {"success": True, "message": "MCP ADA credentials cleared successfully"}
+        
+    except Exception as e:
+        logger.error(f"MCP ADA logout error: {e}")
+        return {"success": False, "error": str(e)}
 
 if __name__ == "__main__":
     logger.info("Starting application...")

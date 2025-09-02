@@ -132,6 +132,134 @@ Google OAuth設定ファイルが作成されました: {default_path}
             logging.error(f"Failed to get access token: {e}")
             return None
     
+    def check_auth_status(self) -> tuple[bool, Optional[dict]]:
+        """認証状態のみをチェック（認証フローは開始しない）"""
+        try:
+            credentials = self._load_credentials()
+            if not credentials:
+                return False, None
+            
+            # 認証情報が有効かチェック
+            if credentials.valid:
+                try:
+                    from googleapiclient.discovery import build
+                    service = build('oauth2', 'v2', credentials=credentials)
+                    user_info = service.userinfo().get().execute()
+                    
+                    return True, {
+                        "id": user_info.get("id"),
+                        "email": user_info.get("email"),
+                        "name": user_info.get("name", user_info.get("email", "Unknown"))
+                    }
+                except Exception as e:
+                    logging.warning(f"Failed to get user info: {e}")
+                    return True, {
+                        "id": "unknown",
+                        "email": "unknown@example.com", 
+                        "name": "認証済みユーザー"
+                    }
+            
+            # 認証情報があるがrefreshが必要な場合
+            if credentials.refresh_token:
+                try:
+                    credentials.refresh(Request())
+                    self._save_credentials(credentials)
+                    
+                    from googleapiclient.discovery import build
+                    service = build('oauth2', 'v2', credentials=credentials)
+                    user_info = service.userinfo().get().execute()
+                    
+                    return True, {
+                        "id": user_info.get("id"),
+                        "email": user_info.get("email"),
+                        "name": user_info.get("name", user_info.get("email", "Unknown"))
+                    }
+                except Exception as e:
+                    logging.warning(f"Failed to refresh credentials: {e}")
+                    return False, None
+            
+            return False, None
+            
+        except Exception as e:
+            logging.error(f"Failed to check auth status: {e}")
+            return False, None
+
+    def get_id_token(self, force_refresh=False) -> Optional[str]:
+        """IDトークンを取得（MCP ADAサーバー用）"""
+        try:
+            # 既存の認証情報を確認
+            credentials = self._load_credentials()
+            
+            if credentials and credentials.valid and not force_refresh:
+                # Google OAuth2.0ライブラリではIDトークンは_id_tokenプライベート属性に保存される
+                if hasattr(credentials, '_id_token') and credentials._id_token:
+                    logging.info("Using existing ID token")
+                    return credentials._id_token
+                # 代替手段: 新しいIDトークンを要求するAPI呼び出し
+                return self._request_id_token(credentials)
+            
+            # 認証情報が無効または期限切れの場合、リフレッシュを試行
+            if credentials and credentials.refresh_token:
+                try:
+                    credentials.refresh(Request())
+                    self._save_credentials(credentials)
+                    if hasattr(credentials, '_id_token') and credentials._id_token:
+                        logging.info("Refreshed credentials with ID token")
+                        return credentials._id_token
+                    return self._request_id_token(credentials)
+                except Exception as e:
+                    logging.warning(f"Failed to refresh credentials: {e}")
+            
+            # 新しい認証フローを開始
+            logging.info("Starting new OAuth flow for ID token")
+            credentials = self._run_oauth_flow()
+            
+            if credentials:
+                if hasattr(credentials, '_id_token') and credentials._id_token:
+                    self._save_credentials(credentials)
+                    return credentials._id_token
+                return self._request_id_token(credentials)
+            
+            logging.warning("No ID token received from OAuth flow")
+            return None
+            
+        except Exception as e:
+            logging.error(f"Failed to get ID token: {e}")
+            return None
+    
+    def _request_id_token(self, credentials: Credentials) -> Optional[str]:
+        """既存の認証情報からIDトークンを要求"""
+        try:
+            import requests
+            
+            # Google OAuth2.0 token endpointにIDトークンを要求
+            token_request_data = {
+                'grant_type': 'refresh_token',
+                'refresh_token': credentials.refresh_token,
+                'client_id': credentials.client_id,
+                'client_secret': credentials.client_secret,
+                'scope': 'openid'
+            }
+            
+            response = requests.post(
+                'https://oauth2.googleapis.com/token',
+                data=token_request_data,
+                headers={'Content-Type': 'application/x-www-form-urlencoded'}
+            )
+            
+            if response.status_code == 200:
+                token_data = response.json()
+                if 'id_token' in token_data:
+                    logging.info("Successfully requested ID token")
+                    return token_data['id_token']
+            
+            logging.warning(f"Failed to get ID token from token endpoint: {response.status_code}")
+            return None
+            
+        except Exception as e:
+            logging.error(f"Failed to request ID token: {e}")
+            return None
+    
     def _load_credentials(self) -> Optional[Credentials]:
         """保存された認証情報を読み込み"""
         if os.path.exists(self.credentials_file):
@@ -147,6 +275,12 @@ Google OAuth設定ファイルが作成されました: {default_path}
             with open(self.credentials_file, 'w') as f:
                 f.write(credentials.to_json())
             logging.info(f"Credentials saved to {self.credentials_file}")
+            
+            # デバッグ: credentialsオブジェクトの内容を確認
+            logging.debug(f"Credentials attributes: {dir(credentials)}")
+            if hasattr(credentials, '_id_token'):
+                logging.debug(f"ID token available: {credentials._id_token is not None}")
+            
         except Exception as e:
             logging.error(f"Failed to save credentials: {e}")
     
@@ -164,7 +298,7 @@ Google OAuth設定ファイルが作成されました: {default_path}
             )
             flow.redirect_uri = os.getenv('GOOGLE_OAUTH_REDIRECT_URI', 'http://localhost:8080')
             
-            # 認証URLを生成
+            # 認証URLを生成（IDトークンも要求）
             auth_url, _ = flow.authorization_url(
                 prompt='consent',
                 access_type='offline',
@@ -183,7 +317,7 @@ Google OAuth設定ファイルが作成されました: {default_path}
             # 認証コードの入力を求める
             auth_code = input("認証後に表示される認証コードを入力してください: ").strip()
             
-            # アクセストークンを取得
+            # アクセストークンとIDトークンを取得
             flow.fetch_token(code=auth_code)
             
             logging.info("OAuth flow completed successfully")
@@ -239,3 +373,7 @@ def get_auth_manager() -> GoogleAuthManager:
 def get_google_access_token(force_refresh=False) -> Optional[str]:
     """Google アクセストークンを取得する便利関数"""
     return get_auth_manager().get_access_token(force_refresh)
+
+def get_google_id_token(force_refresh=False) -> Optional[str]:
+    """Google IDトークンを取得する便利関数（MCP ADA用）"""
+    return get_auth_manager().get_id_token(force_refresh)

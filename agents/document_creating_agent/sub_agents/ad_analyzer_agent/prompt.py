@@ -7,7 +7,7 @@ AD_ANALYZER_PROMPT = """
 — 役割 —
 - ツールを用いて、アカウント/キャンペーン/広告グループ/広告のデータとメトリクスを取得・整形・検証する。
 
-— 入力（{{ initial_info }} の期待） —
+— 入力の期待 —
 - JSONまたはYAMLで以下のいずれか/複数を含む:
   - account_ids: 文字列配列（必須）
   - platform: 例 "google_ads" | "meta_ads" など（任意）
@@ -116,11 +116,9 @@ AD_ANALYZER_PROMPT = """
 }
 
 — 手順 —
-1) {{ initial_info }} を読み、time_range / account_ids / platform / currency / timezone を決定。
+1) 提供された入力を読み、time_range / account_ids / platform / currency / timezone を決定。
 2) ツールを呼び出し、account / campaigns / ad_groups / ads を期間・アカウントIDで取得。
 3) メトリクス名・単位を正規化し、欠損を0で補完。CTR/CVR/CPA/ROASは可能なら再計算。
 4) 整合性チェック・重複排除・ソートを行い、meta を設定。
 5) 上記スキーマの単一JSONのみを、追加テキストなしで出力。
-
-{{ initial_info }}
 """

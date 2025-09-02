@@ -19,32 +19,39 @@ def get_google_access_token():
         logging.error(f"Failed to get Google access token: {e}")
         return None
 
+def get_google_id_token():
+    """Google IDトークンを安全に取得（MCP ADA用）"""
+    try:
+        from auth.google_auth import get_google_id_token as _get_id_token
+        return _get_id_token()
+    except ImportError as e:
+        logging.error(f"Google auth module not available: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"Failed to get Google ID token: {e}")
+        return None
+
+def get_mcp_ada_access_token():
+    """MCP ADA専用アクセストークンを安全に取得"""
+    try:
+        from auth.mcp_ada_auth import get_mcp_ada_access_token as _get_token
+        return _get_token()
+    except ImportError as e:
+        logging.error(f"MCP ADA auth module not available: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"Failed to get MCP ADA access token: {e}")
+        return None
+
 
 def get_tools():
-    """MCPツールを安全に読み込み"""
+    """MCPツールを安全に読み込み（遅延初期化）"""
     tools = []
     
-    # MCPツールを有効化
-    logging.info("Loading MCP tools with Google OAuth authentication")
+    # MCPツールの初期化をスキップしてサーバー起動を優先
+    logging.info("MCP tools will be initialized on first use (lazy loading)")
     
-    # MCP ADAツールを安全に追加
-    try:
-        ada_tool = get_mcp_ada_tool()
-        if ada_tool:
-            tools.append(ada_tool)
-            logging.info("Successfully added MCP ADA tool")
-    except Exception as e:
-        logging.error(f"Failed to add MCP ADA tool: {str(e)}")
-    
-    # MCP PowerPointツールを安全に追加
-    try:
-        powerpoint_tool = get_mcp_powerpoint_tool()
-        if powerpoint_tool:
-            tools.append(powerpoint_tool)
-            logging.info("Successfully added MCP PowerPoint tool")
-    except Exception as e:
-        logging.error(f"Failed to add MCP PowerPoint tool: {str(e)}")
-    
+    # 注意：実際のMCPツールの初期化は get_mcp_ada_tool_lazy() などで行う
     return tools
 
 
@@ -53,11 +60,11 @@ def get_mcp_ada_tool():
     try:
         URL = "https://mcp-server-ad-analyzer.adt-c1a.workers.dev/mcp"
         
-        # Google OAuth2.0でアクセストークンを取得
-        access_token = get_google_access_token()
+        # MCP ADA専用アクセストークンを取得
+        access_token = get_mcp_ada_access_token()
         
         if not access_token:
-            logging.warning("Failed to get Google access token. Please run authentication first.")
+            logging.warning("Failed to get MCP ADA access token. Please run authentication first.")
             return None
         
         logging.debug(f"Initializing MCP ADA tool: {URL}")
