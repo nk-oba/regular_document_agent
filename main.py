@@ -4,23 +4,59 @@ from google.adk.cli.fast_api import get_fast_api_app
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from google.adk.artifacts import InMemoryArtifactService
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
 import json
 import asyncio
 from typing import List
-from document_creating_agent.agent import root_agent
+import logging
+import re
 
+# ログ設定
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# agent engone parameters
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSION_DB_URL = "sqlite:///./sessions.db"
-ALLOWED_ORIGINS = [ "http://127.0.0.1", "*"]
-SERVE_WEB_INTERFACE = False
+ARTIFACT_URL = "gs://dev-datap-agent-bucket"
+ALLOWED_ORIGINS = [
+    "http://127.0.0.1:3000", 
+    "http://localhost:3000", 
+    "http://127.0.0.1:8001", 
+    "http://localhost:8001",
+    "*"
+]
+SERVE_WEB_INTERFACE = True
 
 load_dotenv()
 
-app: FastAPI = get_fast_api_app(
-    agents_dir=AGENT_DIR,
-    allow_origins=ALLOWED_ORIGINS,
-    web=SERVE_WEB_INTERFACE
-)
+# エージェントを安全にインポート
+try:
+    from document_creating_agent.agent import root_agent
+    logger.info("Successfully imported root_agent")
+except Exception as e:
+    logger.error(f"Failed to import root_agent: {str(e)}")
+    import traceback
+    traceback.print_exc()
+    root_agent = None
+
+# FastAPIアプリケーションを安全に作成
+try:
+    app: FastAPI = get_fast_api_app(
+        agents_dir=AGENT_DIR,
+        session_service_uri=SESSION_DB_URL,
+        # artifact_service_uri=ARTIFACT_URL,
+        allow_origins=ALLOWED_ORIGINS,
+        web=SERVE_WEB_INTERFACE
+    )
+    logger.info("Successfully created FastAPI app")
+except Exception as e:
+    logger.error(f"Failed to create FastAPI app: {str(e)}")
+    import traceback
+    traceback.print_exc()
+    raise
 
 class ConnectionManager:
     def __init__(self):
@@ -174,15 +210,12 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
     await manager.connect(websocket)
     try:
         while True:
-            data = await websocket.receive_text()
-            message_data = json.loads(data)
-            user_message = message_data.get('message', '')
-            selected_agent = message_data.get('selectedAgent', 'document_creating_agent')
-            frontend_session_id = message_data.get('sessionId')
-            
             try:
-                import requests
-                import os
+                data = await websocket.receive_text()
+                message_data = json.loads(data)
+                user_message = message_data.get('message', '')
+                selected_agent = message_data.get('selectedAgent', 'document_creating_agent')
+                frontend_session_id = message_data.get('sessionId')
                 
                 print(f"Received message: {user_message}")
                 print(f"Selected agent: {selected_agent}")
@@ -190,83 +223,79 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
                 
                 app_name = selected_agent
                 user_id = f"user_{client_id}"
-                # フロントエンドからのsession_idを使用、なければフォールバック
                 session_id = frontend_session_id or f"session_{client_id}"
                 print(f"Using session_id: {session_id}")
                 
                 # Google API KEYがない場合はフォールバック機能を使用
                 api_key = os.getenv("GOOGLE_API_KEY")
                 print(f"DEBUG: GOOGLE_API_KEY found: {bool(api_key)}")
-                print(f"DEBUG: API key length: {len(api_key) if api_key else 0}")
-                print(f"DEBUG: API key prefix: {api_key[:10] if api_key else 'None'}...")
                 use_real_agent = bool(api_key and api_key != "AIzaSyDemo_API_Key_Not_Real")
+                
+                agent_message = ""
                 
                 if use_real_agent:
                     print("Using real Google ADK agent")
                     
-                    # セッション作成
-                    session_url = f"http://localhost:8000/apps/{app_name}/users/{user_id}/sessions/{session_id}"
-                    print(f"DEBUG: Creating session at URL: {session_url}")
                     try:
+                        import requests
+                        
+                        # セッション作成
+                        session_url = f"http://localhost:8000/apps/{app_name}/users/{user_id}/sessions/{session_id}"
+                        print(f"DEBUG: Creating session at URL: {session_url}")
+                        
                         session_response = await asyncio.to_thread(
                             requests.post,
                             session_url,
                             json={},
-                            headers={"Content-Type": "application/json"}
+                            headers={"Content-Type": "application/json"},
+                            timeout=30
                         )
                         print(f"DEBUG: Session creation status: {session_response.status_code}")
-                        print(f"DEBUG: Session response: {session_response.text[:200]}...")
                         
                         if session_response.status_code not in [200, 400]:
                             print(f"DEBUG: Session creation failed with status {session_response.status_code}")
                             use_real_agent = False
                         elif session_response.status_code == 400 and "already exists" in session_response.text:
                             print(f"DEBUG: Session already exists - continuing with existing session")
-                    except Exception as session_error:
-                        print(f"DEBUG: Session creation error: {session_error}")
-                        import traceback
-                        traceback.print_exc()
-                        use_real_agent = False
-                    
-                    if use_real_agent:
-                        agent_request = {
-                            "appName": app_name,
-                            "userId": user_id,
-                            "sessionId": session_id,
-                            "newMessage": {
-                                "parts": [{"text": user_message}],
-                                "role": "user"
-                            },
-                            "streaming": False
-                        }
                         
-                        print(f"DEBUG: Agent request payload: {json.dumps(agent_request, indent=2)}")
-                        try:
+                        if use_real_agent:
+                            agent_request = {
+                                "appName": app_name,
+                                "userId": user_id,
+                                "sessionId": session_id,
+                                "newMessage": {
+                                    "parts": [{"text": user_message}],
+                                    "role": "user"
+                                },
+                                "streaming": False
+                            }
+                            
+                            print(f"DEBUG: Agent request payload: {json.dumps(agent_request, indent=2)}")
+                            
                             response_result = await asyncio.to_thread(
                                 requests.post,
                                 "http://localhost:8000/run",
                                 json=agent_request,
-                                headers={"Content-Type": "application/json"}
+                                headers={"Content-Type": "application/json"},
+                                timeout=60
                             )
                             
                             print(f"DEBUG: Agent API response status: {response_result.status_code}")
-                            print(f"DEBUG: Agent response headers: {dict(response_result.headers)}")
                             
                             if response_result.status_code == 200:
                                 events = response_result.json()
                                 print(f"DEBUG: Agent events received: {len(events) if isinstance(events, list) else 'not list'}")
-                                print(f"DEBUG: First event: {events[0] if events and isinstance(events, list) else 'No events'}")
                                 agent_message = handler.parse_agent_response(events)
                                 print(f"DEBUG: Parsed agent message: {agent_message[:100]}...")
                             else:
                                 print(f"DEBUG: Agent API error status {response_result.status_code}: {response_result.text}")
                                 use_real_agent = False
                                 
-                        except Exception as agent_error:
-                            print(f"DEBUG: Agent execution error: {agent_error}")
-                            import traceback
-                            traceback.print_exc()
-                            use_real_agent = False
+                    except Exception as agent_error:
+                        print(f"DEBUG: Agent execution error: {agent_error}")
+                        import traceback
+                        traceback.print_exc()
+                        use_real_agent = False
                 
                 if not use_real_agent:
                     print("Using fallback smart response system")
@@ -282,20 +311,38 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
                     "source": "real_agent" if use_real_agent else "fallback"
                 }
                 
+                await manager.send_personal_message(json.dumps(response), websocket)
+                
+            except json.JSONDecodeError as e:
+                print(f"JSON decode error: {str(e)}")
+                error_response = {
+                    "client_id": client_id,
+                    "message": "無効なメッセージ形式です",
+                    "timestamp": None,
+                    "type": "error"
+                }
+                await manager.send_personal_message(json.dumps(error_response), websocket)
+                
             except Exception as e:
-                print(f"Error: {str(e)}")
+                print(f"Error in message processing: {str(e)}")
                 import traceback
                 traceback.print_exc()
                 
-                response = {
+                error_response = {
                     "client_id": client_id,
                     "message": f"エラーが発生しました: {str(e)}",
-                    "timestamp": message_data.get('timestamp'),
+                    "timestamp": None,
                     "type": "error"
                 }
-            
-            await manager.send_personal_message(json.dumps(response), websocket)
+                await manager.send_personal_message(json.dumps(error_response), websocket)
+                
     except WebSocketDisconnect:
+        print(f"WebSocket disconnected for client {client_id}")
+        manager.disconnect(websocket)
+    except Exception as e:
+        print(f"WebSocket error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         manager.disconnect(websocket)
 
 app.add_middleware(
@@ -307,4 +354,10 @@ app.add_middleware(
 )
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=os.environ.get("PORT", 8000))
+    logger.info("Starting application...")
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=os.environ.get("PORT", 8000))
+    except Exception as e:
+        logger.error(f"Failed to start application: {str(e)}")
+        import traceback
+        traceback.print_exc()
