@@ -14,16 +14,27 @@ from urllib.parse import urlencode, parse_qs, urlparse
 import requests
 
 class MCPADAAuthManager:
-    """MCP ADA サーバー専用のOAuth 2.0認証マネージャー"""
+    """MCP ADA サーバー専用のOAuth 2.0認証マネージャー（ユーザー単位）"""
     
-    def __init__(self):
+    def __init__(self, user_id: str = None):
         self.authorization_endpoint = "https://mcp-server-ad-analyzer.adt-c1a.workers.dev/authorize"
         self.token_endpoint = "https://mcp-server-ad-analyzer.adt-c1a.workers.dev/token"
         self.registration_endpoint = "https://mcp-server-ad-analyzer.adt-c1a.workers.dev/register"
-        self.credentials_file = "mcp_ada_credentials.json"
-        self.client_credentials_file = "mcp_ada_client.json"
+        
+        # ユーザー固有のファイル名
+        if user_id:
+            self.credentials_file = f"mcp_ada_credentials_{user_id}.json"
+            self.client_credentials_file = f"mcp_ada_client_{user_id}.json"
+        else:
+            # 後方互換性のためのデフォルト
+            self.credentials_file = "mcp_ada_credentials.json"
+            self.client_credentials_file = "mcp_ada_client.json"
         self.scopes = ["mcp:reports", "mcp:properties"]
-        self.redirect_uri = "http://localhost:8080"
+        # 環境変数でリダイレクトURIを設定可能にする
+        self.redirect_uri = os.getenv(
+            "MCP_ADA_REDIRECT_URI", 
+            "http://127.0.0.1:8000/static/mcp_ada_callback.html"
+        )
         self.client_id = None
         self.client_secret = None
     
@@ -53,14 +64,9 @@ class MCPADAAuthManager:
                 except Exception as e:
                     logging.warning(f"Failed to refresh MCP ADA token: {e}")
             
-            # 新しい認証フローを開始
-            logging.info("Starting new MCP ADA OAuth flow")
-            credentials = self._run_oauth_flow()
-            
-            if credentials:
-                self._save_credentials(credentials)
-                return credentials.get('access_token')
-            
+            # Webフローでは自動的に認証フローを開始しない
+            # 認証が必要な場合は、フロントエンドから明示的に /auth/mcp-ada/start を呼び出す
+            logging.info("MCP ADA authentication required. Please use /auth/mcp-ada/start endpoint.")
             return None
             
         except Exception as e:
@@ -106,8 +112,76 @@ class MCPADAAuthManager:
         ).decode('utf-8').rstrip('=')
         return code_verifier, code_challenge
     
+    def generate_auth_url(self) -> tuple[str, str, str]:
+        """MCP ADA認証URLを生成（Webフロー用）"""
+        try:
+            # クライアントIDが設定されていることを確認
+            if not self.client_id:
+                raise ValueError("Client ID is not set. Please ensure client registration is completed.")
+            
+            # PKCE パラメータを生成
+            code_verifier, code_challenge = self._generate_pkce_challenge()
+            state = secrets.token_urlsafe(32)
+            
+            # 認証URLを構築
+            auth_params = {
+                'response_type': 'code',
+                'client_id': self.client_id,
+                'redirect_uri': self.redirect_uri,
+                'scope': ' '.join(self.scopes),
+                'state': state,
+                'code_challenge': code_challenge,
+                'code_challenge_method': 'S256'
+            }
+            
+            auth_url = f"{self.authorization_endpoint}?{urlencode(auth_params)}"
+            
+            # PKCE情報を一時保存（実際のアプリでは安全なストレージを使用）
+            self._temp_pkce = {
+                'code_verifier': code_verifier,
+                'state': state
+            }
+            
+            return auth_url, state, code_verifier
+            
+        except Exception as e:
+            logging.error(f"Failed to generate MCP ADA auth URL: {e}")
+            raise
+
+    def process_auth_code(self, auth_code: str, state: str = None) -> Optional[dict]:
+        """認証コードを処理してトークンを取得（Webフロー用）"""
+        try:
+            # 状態検証（実装されている場合）
+            if hasattr(self, '_temp_pkce') and state:
+                if self._temp_pkce.get('state') != state:
+                    logging.error("State parameter mismatch")
+                    return None
+                code_verifier = self._temp_pkce.get('code_verifier')
+            else:
+                # フォールバック：新しいcode_verifierを生成
+                code_verifier, _ = self._generate_pkce_challenge()
+            
+            # URLエンコードされた認証コードをデコード
+            from urllib.parse import unquote
+            auth_code = unquote(auth_code)
+            
+            # アクセストークンを取得
+            credentials = self._exchange_code_for_token(auth_code, code_verifier)
+            
+            if credentials:
+                self._save_credentials(credentials)
+                # 一時保存データをクリア
+                if hasattr(self, '_temp_pkce'):
+                    delattr(self, '_temp_pkce')
+                
+            return credentials
+            
+        except Exception as e:
+            logging.error(f"Failed to process MCP ADA auth code: {e}")
+            return None
+
     def _run_oauth_flow(self) -> Optional[dict]:
-        """MCP ADA OAuth認証フローを実行"""
+        """MCP ADA OAuth認証フローを実行（従来の対話型）"""
         try:
             # PKCE パラメータを生成
             code_verifier, code_challenge = self._generate_pkce_challenge()
@@ -251,6 +325,9 @@ class MCPADAAuthManager:
     def _register_client(self) -> bool:
         """動的クライアント登録を実行"""
         try:
+            logging.info(f"Registering MCP ADA client with endpoint: {self.registration_endpoint}")
+            logging.info(f"Redirect URI: {self.redirect_uri}")
+            
             registration_data = {
                 "client_name": "MCP ADA Client",
                 "redirect_uris": [self.redirect_uri],
@@ -260,14 +337,22 @@ class MCPADAAuthManager:
                 "token_endpoint_auth_method": "none"  # PKCE使用のためクライアントシークレット不要
             }
             
+            logging.info(f"Registration data: {registration_data}")
+            
             response = requests.post(
                 self.registration_endpoint,
                 json=registration_data,
-                headers={'Content-Type': 'application/json'}
+                headers={'Content-Type': 'application/json'},
+                timeout=30
             )
+            
+            logging.info(f"Registration response status: {response.status_code}")
+            logging.info(f"Registration response headers: {dict(response.headers)}")
             
             if response.status_code == 201:
                 client_info = response.json()
+                logging.info(f"Client registration response: {client_info}")
+                
                 self.client_id = client_info['client_id']
                 self.client_secret = client_info.get('client_secret')
                 
@@ -278,8 +363,16 @@ class MCPADAAuthManager:
                 return True
             else:
                 logging.error(f"Client registration failed: {response.status_code} - {response.text}")
+                try:
+                    error_data = response.json()
+                    logging.error(f"Error details: {error_data}")
+                except:
+                    logging.error(f"Raw error response: {response.text}")
                 return False
                 
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Network error during client registration: {e}")
+            return False
         except Exception as e:
             logging.error(f"Failed to register client: {e}")
             return False
@@ -294,16 +387,41 @@ class MCPADAAuthManager:
             os.remove(self.client_credentials_file)
             logging.info("MCP ADA client credentials revoked")
 
-# グローバルインスタンス
-_mcp_ada_auth_manager = None
+# ユーザー単位のインスタンス管理
+_mcp_ada_auth_managers = {}
 
-def get_mcp_ada_auth_manager() -> MCPADAAuthManager:
-    """MCP ADA認証マネージャーのシングルトンインスタンスを取得"""
-    global _mcp_ada_auth_manager
-    if _mcp_ada_auth_manager is None:
-        _mcp_ada_auth_manager = MCPADAAuthManager()
-    return _mcp_ada_auth_manager
+def get_mcp_ada_auth_manager(user_id: str = None) -> MCPADAAuthManager:
+    """MCP ADA認証マネージャーのユーザー単位インスタンスを取得"""
+    global _mcp_ada_auth_managers
+    
+    # user_idがない場合はデフォルト（後方互換性）
+    key = user_id or "default"
+    
+    if key not in _mcp_ada_auth_managers:
+        _mcp_ada_auth_managers[key] = MCPADAAuthManager(user_id)
+    
+    return _mcp_ada_auth_managers[key]
 
-def get_mcp_ada_access_token(force_refresh=False) -> Optional[str]:
-    """MCP ADA アクセストークンを取得する便利関数"""
-    return get_mcp_ada_auth_manager().get_access_token(force_refresh)
+def get_mcp_ada_access_token(user_id: str = None, force_refresh=False) -> Optional[str]:
+    """MCP ADA アクセストークンを取得する便利関数（ユーザー単位）"""
+    auth_manager = get_mcp_ada_auth_manager(user_id)
+    
+    # 既存の認証情報をチェック（認証フローは開始しない）
+    credentials = auth_manager._load_credentials()
+    
+    if credentials and auth_manager._is_token_valid(credentials) and not force_refresh:
+        return credentials.get('access_token')
+    
+    # リフレッシュトークンでの更新を試行
+    if credentials and credentials.get('refresh_token'):
+        try:
+            new_credentials = auth_manager._refresh_token(credentials['refresh_token'])
+            if new_credentials:
+                auth_manager._save_credentials(new_credentials)
+                return new_credentials.get('access_token')
+        except Exception as e:
+            logging.warning(f"Failed to refresh MCP ADA token for user {user_id}: {e}")
+    
+    # 認証が必要な場合は None を返す（自動的に認証フローを開始しない）
+    logging.info(f"MCP ADA authentication required for user {user_id}. Please authenticate via frontend.")
+    return None

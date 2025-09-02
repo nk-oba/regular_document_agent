@@ -5,15 +5,17 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from middleware import auth_middleware
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 import json
 import asyncio
-from typing import List
+from typing import List, Optional
 import logging
 import re
+from fastapi import Request
 
 # ログ設定
 logging.basicConfig(level=logging.INFO)
@@ -76,6 +78,9 @@ except Exception as e:
 # 認証ミドルウェアを追加（CORSより前に）
 app.middleware("http")(auth_middleware)
 
+# 静的ファイルの設定（MCP ADA認証コールバック用）
+app.mount("/static", StaticFiles(directory=".."), name="static")
+
 # CORS設定を最後に適用してget_fast_api_appの設定を上書き
 app.add_middleware(
     CORSMiddleware,
@@ -86,6 +91,27 @@ app.add_middleware(
 )
 
 logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
+
+# ユーザーIDを取得するヘルパー関数
+def get_current_user_id() -> Optional[str]:
+    """現在認証されているユーザーのIDを取得"""
+    try:
+        import sys
+        sys.path.append(os.path.dirname(__file__))
+        from auth.google_auth import get_auth_manager
+        
+        auth_manager = get_auth_manager()
+        is_authenticated, user_info = auth_manager.check_auth_status()
+        
+        if is_authenticated and user_info:
+            # ユーザーIDとしてemailを使用（一意性を保証）
+            return user_info.get("email", user_info.get("id"))
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Failed to get current user ID: {e}")
+        return None
 
 # 手動でOPTIONSリクエストに対応
 @app.options("/{path:path}")
@@ -228,24 +254,31 @@ async def start_oauth():
 # MCP ADA認証ステータス確認エンドポイント
 @app.get("/auth/mcp-ada/status")
 async def mcp_ada_auth_status():
-    """MCP ADA認証ステータスを確認"""
+    """MCP ADA認証ステータスを確認（ユーザー単位）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
         from auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
-        auth_manager = get_mcp_ada_auth_manager()
+        # 現在のユーザーIDを取得
+        user_id = get_current_user_id()
+        if not user_id:
+            return {"authenticated": False, "service": "MCP ADA", "error": "User not authenticated"}
         
-        # 既存の認証情報をチェック
-        existing_token = auth_manager.get_access_token()
-        if existing_token:
+        # ユーザー固有の認証マネージャーを取得
+        auth_manager = get_mcp_ada_auth_manager(user_id)
+        
+        # 既存の認証情報をチェック（認証フローは開始しない）
+        credentials = auth_manager._load_credentials()
+        if credentials and auth_manager._is_token_valid(credentials):
             return {
                 "authenticated": True,
                 "service": "MCP ADA",
-                "scopes": auth_manager.scopes
+                "scopes": auth_manager.scopes,
+                "user_id": user_id
             }
             
-        return {"authenticated": False, "service": "MCP ADA"}
+        return {"authenticated": False, "service": "MCP ADA", "user_id": user_id}
         
     except Exception as e:
         logger.error(f"MCP ADA auth status check error: {e}")
@@ -254,27 +287,101 @@ async def mcp_ada_auth_status():
 # MCP ADA認証開始エンドポイント
 @app.get("/auth/mcp-ada/start")
 async def start_mcp_ada_oauth():
-    """MCP ADA OAuth2.0認証を開始"""
+    """MCP ADA OAuth2.0認証を開始（ユーザー単位）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
         from auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
-        auth_manager = get_mcp_ada_auth_manager()
-        
-        # 既存の認証情報をチェック
-        existing_token = auth_manager.get_access_token()
-        if existing_token:
+        # 現在のユーザーIDを取得
+        user_id = get_current_user_id()
+        if not user_id:
             return {
-                "success": True,
-                "message": "Already authenticated with MCP ADA",
-                "authenticated": True
+                "success": False,
+                "message": "User not authenticated. Please login with Google first.",
+                "authenticated": False
             }
         
-        # 認証フローを開始（対話型）
-        access_token = auth_manager.get_access_token()
+        # ユーザー固有の認証マネージャーを取得
+        auth_manager = get_mcp_ada_auth_manager(user_id)
         
-        if access_token:
+        # 既存の認証情報をチェック（認証フローは開始しない）
+        credentials = auth_manager._load_credentials()
+        if credentials and auth_manager._is_token_valid(credentials):
+            return {
+                "success": True,
+                "message": f"Already authenticated with MCP ADA for user {user_id}",
+                "authenticated": True,
+                "user_id": user_id
+            }
+        
+        # クライアント情報を確保
+        if not auth_manager._ensure_client_registered():
+            return {
+                "success": False,
+                "message": "Failed to register MCP ADA client",
+                "authenticated": False
+            }
+        
+        # 認証URLを生成してフロントエンドに返す
+        try:
+            auth_url, state, code_verifier = auth_manager.generate_auth_url()
+            
+            return {
+                "success": True,
+                "auth_url": auth_url,
+                "state": state,
+                "message": "Please complete authentication in the browser",
+                "authenticated": False
+            }
+        except ValueError as e:
+            logger.error(f"MCP ADA auth URL generation failed: {e}")
+            return {
+                "success": False,
+                "message": f"Failed to generate auth URL: {str(e)}",
+                "authenticated": False
+            }
+        
+    except Exception as e:
+        logger.error(f"MCP ADA OAuth start error: {e}")
+        return {"error": f"Failed to start MCP ADA authentication: {str(e)}"}
+
+# MCP ADA認証コールバックエンドポイント
+@app.post("/auth/mcp-ada/callback")
+async def mcp_ada_callback(request: dict):
+    """MCP ADA認証コールバック処理（ユーザー単位）"""
+    try:
+        import sys
+        sys.path.append(os.path.dirname(__file__))
+        from auth.mcp_ada_auth import get_mcp_ada_auth_manager
+        
+        # 現在のユーザーIDを取得
+        user_id = get_current_user_id()
+        if not user_id:
+            return {
+                "success": False,
+                "message": "User not authenticated. Please login with Google first.",
+                "authenticated": False
+            }
+        
+        # ユーザー固有の認証マネージャーを取得
+        auth_manager = get_mcp_ada_auth_manager(user_id)
+        
+        # 認証コードを取得
+        auth_code = request.get('code')
+        state = request.get('state')
+        
+        if not auth_code:
+            return {
+                "success": False,
+                "message": "Authorization code not provided",
+                "authenticated": False
+            }
+        
+        # 認証コードを処理してトークンを取得
+        credentials = auth_manager.process_auth_code(auth_code, state)
+        
+        if credentials:
             return {
                 "success": True,
                 "message": "MCP ADA authentication completed successfully",
@@ -283,27 +390,37 @@ async def start_mcp_ada_oauth():
         else:
             return {
                 "success": False,
-                "message": "MCP ADA authentication failed or was cancelled",
+                "message": "Failed to process authorization code",
                 "authenticated": False
             }
         
     except Exception as e:
-        logger.error(f"MCP ADA OAuth start error: {e}")
-        return {"error": f"Failed to start MCP ADA authentication: {str(e)}"}
+        logger.error(f"MCP ADA callback error: {e}")
+        return {"error": f"Failed to process MCP ADA callback: {str(e)}"}
 
 # MCP ADA認証ログアウトエンドポイント
 @app.post("/auth/mcp-ada/logout")
 async def mcp_ada_logout():
-    """MCP ADA認証情報をクリア"""
+    """MCP ADA認証情報をクリア（ユーザー単位）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
         from auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
-        auth_manager = get_mcp_ada_auth_manager()
+        # 現在のユーザーIDを取得
+        user_id = get_current_user_id()
+        if not user_id:
+            return {"success": False, "error": "User not authenticated"}
+        
+        # ユーザー固有の認証マネージャーを取得
+        auth_manager = get_mcp_ada_auth_manager(user_id)
         auth_manager.revoke_credentials()
         
-        return {"success": True, "message": "MCP ADA credentials cleared successfully"}
+        return {
+            "success": True, 
+            "message": f"MCP ADA credentials cleared successfully for user {user_id}",
+            "user_id": user_id
+        }
         
     except Exception as e:
         logger.error(f"MCP ADA logout error: {e}")
