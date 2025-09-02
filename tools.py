@@ -1,16 +1,31 @@
 import logging
 import os
+import sys
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioServerParameters
 from google.adk.tools.mcp_tool import StreamableHTTPConnectionParams
+
+# パスを追加してauth モジュールをインポート可能にする
+sys.path.append(os.path.dirname(__file__))
+
+def get_google_access_token():
+    """Google認証トークンを安全に取得"""
+    try:
+        from auth.google_auth import get_google_access_token as _get_token
+        return _get_token()
+    except ImportError as e:
+        logging.error(f"Google auth module not available: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"Failed to get Google access token: {e}")
+        return None
 
 
 def get_tools():
     """MCPツールを安全に読み込み"""
     tools = []
     
-    # MCPツールを一時的に無効化（デバッグ用）
-    logging.info("MCP tools temporarily disabled for debugging")
-    return tools
+    # MCPツールを有効化
+    logging.info("Loading MCP tools with Google OAuth authentication")
     
     # MCP ADAツールを安全に追加
     try:
@@ -38,11 +53,11 @@ def get_mcp_ada_tool():
     try:
         URL = "https://mcp-server-ad-analyzer.adt-c1a.workers.dev/mcp"
         
-        # 環境変数から認証トークンを取得
-        auth_token = os.getenv("MCP_ADA_AUTH_TOKEN")
+        # Google OAuth2.0でアクセストークンを取得
+        access_token = get_google_access_token()
         
-        if not auth_token:
-            logging.warning("MCP_ADA_AUTH_TOKEN not found in environment variables")
+        if not access_token:
+            logging.warning("Failed to get Google access token. Please run authentication first.")
             return None
         
         logging.debug(f"Initializing MCP ADA tool: {URL}")
@@ -51,7 +66,7 @@ def get_mcp_ada_tool():
             connection_params=StreamableHTTPConnectionParams(
                 url=URL,
                 headers={
-                    "Authorization": f"Bearer {auth_token}",
+                    "Authorization": f"Bearer {access_token}",
                 },
             )
         )

@@ -22,7 +22,6 @@ load_dotenv()
 
 logging.basicConfig(level=logging.DEBUG)
 
-# ツールを安全に読み込み
 tools = [load_artifacts]
 try:
     mcp_tools = get_tools()
@@ -30,9 +29,7 @@ try:
     logging.info(f"Successfully loaded {len(mcp_tools)} MCP tools")
 except Exception as e:
     logging.error(f"Failed to load MCP tools: {str(e)}")
-    # MCPツールが読み込めなくても基本ツールで動作継続
 
-# サブエージェントを安全に読み込み
 sub_agents = []
 try:
     sub_agents.append(ad_analyzer_agent)
