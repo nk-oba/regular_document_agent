@@ -46,13 +46,26 @@ except Exception as e:
 
 # FastAPIアプリケーションを安全に作成
 try:
-    app: FastAPI = get_fast_api_app(
-        agents_dir=AGENT_DIR,
-        session_service_uri=SESSION_DB_URL,
-        # artifact_service_uri=ARTIFACT_URL,
-        allow_origins=ALLOWED_ORIGINS,
-        web=SERVE_WEB_INTERFACE
-    )
+    # サービスアカウント認証が設定されている場合はGCSを使用
+    google_creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if google_creds_path and os.path.exists(google_creds_path.replace("/app/", "/app/")):
+        logger.info(f"Using GCS Artifact Service with credentials: {google_creds_path}")
+        app: FastAPI = get_fast_api_app(
+            agents_dir=AGENT_DIR,
+            session_service_uri=SESSION_DB_URL,
+            artifact_service_uri=ARTIFACT_URL,  # GCSを使用
+            allow_origins=ALLOWED_ORIGINS,
+            web=SERVE_WEB_INTERFACE
+        )
+    else:
+        logger.info("Using InMemory Artifact Service (no GCS credentials found)")
+        app: FastAPI = get_fast_api_app(
+            agents_dir=AGENT_DIR,
+            session_service_uri=SESSION_DB_URL,
+            # artifact_service_uri=ARTIFACT_URL,  # InMemoryを使用
+            allow_origins=ALLOWED_ORIGINS,
+            web=SERVE_WEB_INTERFACE
+        )
     logger.info("Successfully created FastAPI app")
 except Exception as e:
     logger.error(f"Failed to create FastAPI app: {str(e)}")
