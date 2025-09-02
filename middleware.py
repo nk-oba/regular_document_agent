@@ -48,7 +48,8 @@ async def auth_middleware(request: Request, call_next):
         "/auth/logout",
         "/docs",
         "/redoc",
-        "/openapi.json"
+        "/openapi.json",
+        "/dev-ui/"
     ]
     
     # 静的ファイルや認証が不要なパスの場合はスキップ
@@ -61,14 +62,14 @@ async def auth_middleware(request: Request, call_next):
         response = await call_next(request)
         return response
     
-    # API エンドポイントの場合は認証をチェック
-    if request.url.path.startswith("/api/") or request.url.path.startswith("/v1/"):
-        if not check_authentication():
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required. Please login first.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+    # APIエンドポイントでは基本的な認証状態をチェック
+    # サーバー側の認証状態を確認（Google OAuth トークンが有効かどうか）
+    if not check_authentication():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. Please login first.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
     response = await call_next(request)
     return response
