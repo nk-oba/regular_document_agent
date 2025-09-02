@@ -49,7 +49,8 @@ async def auth_middleware(request: Request, call_next):
         "/docs",
         "/redoc",
         "/openapi.json",
-        "/dev-ui/"
+        "/dev-ui/",
+        "/list-apps"
     ]
     
     # 静的ファイルや認証が不要なパスの場合はスキップ

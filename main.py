@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # agent engone parameters
-AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
+AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agents")
 SESSION_DB_URL = "sqlite:///./sessions.db"
 ARTIFACT_URL = "gs://dev-datap-agent-bucket"
 ALLOWED_ORIGINS = [
@@ -39,7 +39,7 @@ load_dotenv()
 
 # エージェントを安全にインポート
 try:
-    from document_creating_agent.agent import root_agent
+    from agents.document_creating_agent.agent import root_agent
     logger.info("Successfully imported root_agent")
 except Exception as e:
     logger.error(f"Failed to import root_agent: {str(e)}")
