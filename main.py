@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 from google.adk.cli.fast_api import get_fast_api_app
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -102,18 +102,18 @@ app.add_middleware(
 
 logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
 
-# ユーザーIDを取得するヘルパー関数
-def get_current_user_id() -> Optional[str]:
-    """現在認証されているユーザーのIDを取得"""
+# ユーザーIDを取得するヘルパー関数（セッションベース）
+def get_current_user_id(request: Request) -> Optional[str]:
+    """現在認証されているユーザーのIDを取得（セッションベース）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
-        from auth.google_auth import get_auth_manager
+        from auth.session_auth import get_session_auth_manager
         
-        auth_manager = get_auth_manager()
-        is_authenticated, user_info = auth_manager.check_auth_status()
+        session_manager = get_session_auth_manager()
+        user_info = session_manager.get_user_info(request)
         
-        if is_authenticated and user_info:
+        if user_info:
             # ユーザーIDとしてemailを使用（一意性を保証）
             return user_info.get("email", user_info.get("id"))
         
@@ -123,6 +123,26 @@ def get_current_user_id() -> Optional[str]:
         logger.error(f"Failed to get current user ID: {e}")
         return None
 
+# MCP認証用の従来のユーザーID取得関数（ユーザー共通のため維持）
+def get_current_user_id_for_mcp() -> Optional[str]:
+    """MCP認証用のユーザーIDを取得（ユーザー共通）"""
+    try:
+        import sys
+        sys.path.append(os.path.dirname(__file__))
+        from auth.google_auth import get_auth_manager
+        
+        auth_manager = get_auth_manager()
+        is_authenticated, user_info = auth_manager.check_auth_status()
+        
+        if is_authenticated and user_info:
+            return user_info.get("email", user_info.get("id"))
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Failed to get current user ID for MCP: {e}")
+        return None
+
 # 手動でOPTIONSリクエストに対応
 @app.options("/{path:path}")
 async def options_handler():
@@ -130,8 +150,8 @@ async def options_handler():
 
 # Google OAuth2.0コールバックエンドポイント
 @app.get("/auth/callback")
-async def oauth_callback(code: str = None, error: str = None):
-    """Google OAuth2.0認証コールバック"""
+async def oauth_callback(request: Request, code: str = None, error: str = None):
+    """Google OAuth2.0認証コールバック（セッションベース）"""
     if error:
         return {"error": f"Authentication failed: {error}"}
     
@@ -145,33 +165,46 @@ async def oauth_callback(code: str = None, error: str = None):
         import sys
         sys.path.append(os.path.dirname(__file__))
         from auth.google_auth import get_auth_manager
+        from auth.session_auth import get_session_auth_manager
         
-        # 初回認証時はデフォルトマネージャーを使用（後でユーザー固有に移行）
-        auth_manager = get_auth_manager()
-        
-        # 認証コードを使ってトークンを取得
-        credentials = auth_manager.process_authorization_code(code)
+        # 一時的な認証マネージャーを使用してトークンを取得
+        temp_auth_manager = get_auth_manager()
+        credentials = temp_auth_manager.process_authorization_code(code)
         
         if credentials:
-            # 認証成功後、ユーザー情報を取得してユーザー固有の認証情報に移行
+            # ユーザー情報を取得
             try:
-                is_authenticated, user_info = auth_manager.check_auth_status()
-                if is_authenticated and user_info:
-                    user_id = user_info.get("email", user_info.get("id"))
-                    if user_id:
-                        # ユーザー固有の認証マネージャーを取得
-                        user_auth_manager = get_auth_manager(user_id)
-                        # 認証情報をユーザー固有のファイルに保存
-                        user_auth_manager._save_credentials(credentials)
-                        logger.info(f"Credentials saved for user: {user_id}")
+                from googleapiclient.discovery import build
+                service = build('oauth2', 'v2', credentials=credentials)
+                user_info = service.userinfo().get().execute()
+                
+                user_data = {
+                    "id": user_info.get("id"),
+                    "email": user_info.get("email"),
+                    "name": user_info.get("name", user_info.get("email", "Unknown"))
+                }
+                
+                # セッション管理システムに認証情報を保存
+                session_manager = get_session_auth_manager()
+                session_id = session_manager.create_session(user_data, credentials)
+                
+                # MCP用の従来システムにも保存（ユーザー共通）
+                user_id = user_data.get("email", user_data.get("id"))
+                if user_id:
+                    user_auth_manager = get_auth_manager(user_id)
+                    user_auth_manager._save_credentials(credentials)
+                    logger.info(f"Credentials saved for MCP user: {user_id}")
+                
+                logger.info(f"Session created for user: {user_data.get('email')}")
+                
+                # セッションクッキー付きでリダイレクト
+                response = RedirectResponse(url="http://localhost:3000", status_code=302)
+                session_manager.set_session_cookie(response, session_id)
+                return response
+                
             except Exception as e:
-                logger.warning(f"Failed to migrate credentials to user-specific file: {e}")
-                # エラーが発生してもメインの認証フローは継続
-        
-        if credentials:
-            logger.info("OAuth credentials successfully obtained")
-            # 認証成功後、フロントエンドにリダイレクト
-            return RedirectResponse(url="http://localhost:3000", status_code=302)
+                logger.error(f"Failed to get user info: {e}")
+                return {"error": "Failed to get user information"}
         else:
             logger.error("Failed to obtain OAuth credentials")
             return {
@@ -188,27 +221,17 @@ async def oauth_callback(code: str = None, error: str = None):
 
 # Google OAuth2.0認証ステータス確認エンドポイント
 @app.get("/auth/status")
-async def auth_status():
-    """現在の認証ステータスを確認（認証フローは開始しない）"""
+async def auth_status(request: Request):
+    """現在の認証ステータスを確認（セッションベース）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
-        from auth.google_auth import get_auth_manager
+        from auth.session_auth import get_session_auth_manager
         
-        # 現在のユーザーIDを取得
-        user_id = get_current_user_id()
+        session_manager = get_session_auth_manager()
+        user_info = session_manager.get_user_info(request)
         
-        # ユーザー固有の認証マネージャーを取得
-        if user_id:
-            auth_manager = get_auth_manager(user_id)
-        else:
-            # 最初の認証時はデフォルトマネージャーもチェック
-            auth_manager = get_auth_manager()
-        
-        # 認証状態のみをチェック（認証フローは開始しない）
-        is_authenticated, user_info = auth_manager.check_auth_status()
-        
-        if is_authenticated and user_info:
+        if user_info:
             return {
                 "authenticated": True,
                 "user": user_info
@@ -222,26 +245,22 @@ async def auth_status():
 
 # Google OAuth2.0ログアウトエンドポイント
 @app.post("/auth/logout")
-async def logout():
-    """認証情報をクリア（ユーザー単位）"""
+async def logout(request: Request, response: Response):
+    """認証情報をクリア（セッションベース）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
-        from auth.google_auth import get_auth_manager
+        from auth.session_auth import get_session_auth_manager
         
-        # 現在のユーザーIDを取得
-        user_id = get_current_user_id()
+        session_manager = get_session_auth_manager()
+        session_id = session_manager.get_session_id_from_request(request)
         
-        if user_id:
-            # ユーザー固有の認証マネージャーを取得
-            auth_manager = get_auth_manager(user_id)
-            auth_manager.revoke_credentials()
-            return {"success": True, "message": f"Logged out successfully for user {user_id}"}
-        else:
-            # デフォルトマネージャーの認証情報もクリア
-            auth_manager = get_auth_manager()
-            auth_manager.revoke_credentials()
+        if session_id:
+            session_manager.delete_session(session_id)
+            session_manager.clear_session_cookie(response)
             return {"success": True, "message": "Logged out successfully"}
+        else:
+            return {"success": True, "message": "No active session found"}
         
     except Exception as e:
         logger.error(f"Logout error: {e}")
@@ -249,26 +268,19 @@ async def logout():
 
 # Google OAuth2.0認証開始エンドポイント
 @app.get("/auth/start")
-async def start_oauth():
-    """Google OAuth2.0認証を開始"""
+async def start_oauth(request: Request):
+    """Google OAuth2.0認証を開始（セッションベース）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
         from auth.google_auth import get_auth_manager
+        from auth.session_auth import get_session_auth_manager
         
-        # 現在のユーザーIDを取得
-        user_id = get_current_user_id()
+        # セッションベースの認証状態をチェック
+        session_manager = get_session_auth_manager()
+        user_info = session_manager.get_user_info(request)
         
-        # ユーザー固有の認証マネージャーを取得
-        if user_id:
-            auth_manager = get_auth_manager(user_id)
-        else:
-            # 最初の認証時はデフォルトマネージャーを使用
-            auth_manager = get_auth_manager()
-        
-        # 既存の認証情報をチェック（認証フローは開始しない）
-        is_authenticated, user_info = auth_manager.check_auth_status()
-        if is_authenticated:
+        if user_info:
             return {
                 "success": True,
                 "message": "Already authenticated",
@@ -276,6 +288,7 @@ async def start_oauth():
             }
         
         # 認証URLを生成（認証フロー開始）
+        auth_manager = get_auth_manager()
         if not auth_manager.client_secrets_file or not os.path.exists(auth_manager.client_secrets_file):
             return {"error": "OAuth client secrets not configured"}
         
@@ -306,14 +319,14 @@ async def start_oauth():
 # MCP ADA認証ステータス確認エンドポイント
 @app.get("/auth/mcp-ada/status")
 async def mcp_ada_auth_status():
-    """MCP ADA認証ステータスを確認（ユーザー単位）"""
+    """MCP ADA認証ステータスを確認（ユーザー共通）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
         from auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
-        # 現在のユーザーIDを取得
-        user_id = get_current_user_id()
+        # MCP用のユーザーIDを取得（ユーザー共通）
+        user_id = get_current_user_id_for_mcp()
         if not user_id:
             return {"authenticated": False, "service": "MCP ADA", "error": "User not authenticated"}
         
@@ -339,14 +352,14 @@ async def mcp_ada_auth_status():
 # MCP ADA認証開始エンドポイント
 @app.get("/auth/mcp-ada/start")
 async def start_mcp_ada_oauth():
-    """MCP ADA OAuth2.0認証を開始（ユーザー単位）"""
+    """MCP ADA OAuth2.0認証を開始（ユーザー共通）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
         from auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
-        # 現在のユーザーIDを取得
-        user_id = get_current_user_id()
+        # MCP用のユーザーIDを取得（ユーザー共通）
+        user_id = get_current_user_id_for_mcp()
         if not user_id:
             return {
                 "success": False,
@@ -401,14 +414,14 @@ async def start_mcp_ada_oauth():
 # MCP ADA認証コールバックエンドポイント
 @app.post("/auth/mcp-ada/callback")
 async def mcp_ada_callback(request: dict):
-    """MCP ADA認証コールバック処理（ユーザー単位）"""
+    """MCP ADA認証コールバック処理（ユーザー共通）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
         from auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
-        # 現在のユーザーIDを取得
-        user_id = get_current_user_id()
+        # MCP用のユーザーIDを取得（ユーザー共通）
+        user_id = get_current_user_id_for_mcp()
         if not user_id:
             return {
                 "success": False,
@@ -453,14 +466,14 @@ async def mcp_ada_callback(request: dict):
 # MCP ADA認証ログアウトエンドポイント
 @app.post("/auth/mcp-ada/logout")
 async def mcp_ada_logout():
-    """MCP ADA認証情報をクリア（ユーザー単位）"""
+    """MCP ADA認証情報をクリア（ユーザー共通）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
         from auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
-        # 現在のユーザーIDを取得
-        user_id = get_current_user_id()
+        # MCP用のユーザーIDを取得（ユーザー共通）
+        user_id = get_current_user_id_for_mcp()
         if not user_id:
             return {"success": False, "error": "User not authenticated"}
         
@@ -477,6 +490,28 @@ async def mcp_ada_logout():
     except Exception as e:
         logger.error(f"MCP ADA logout error: {e}")
         return {"success": False, "error": str(e)}
+
+# セッションクリーンアップのバックグラウンドタスク
+@app.on_event("startup")
+async def startup_event():
+    """アプリケーション起動時の処理"""
+    import asyncio
+    from auth.session_auth import get_session_auth_manager
+    
+    async def cleanup_sessions():
+        """期限切れセッションの定期クリーンアップ"""
+        while True:
+            try:
+                session_manager = get_session_auth_manager()
+                session_manager.cleanup_expired_sessions()
+                await asyncio.sleep(3600)  # 1時間ごとにクリーンアップ
+            except Exception as e:
+                logger.error(f"Session cleanup error: {e}")
+                await asyncio.sleep(3600)
+    
+    # バックグラウンドタスクを開始
+    asyncio.create_task(cleanup_sessions())
+    logger.info("Session cleanup task started")
 
 if __name__ == "__main__":
     logger.info("Starting application...")

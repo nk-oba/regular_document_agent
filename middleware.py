@@ -10,35 +10,23 @@ from fastapi import Request
 logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
-def check_authentication() -> bool:
-    """認証状態をチェックする関数（ユーザー単位）"""
+def check_authentication(request: Request) -> bool:
+    """セッションベースの認証状態をチェックする関数"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
-        from auth.google_auth import get_auth_manager
-        from main import get_current_user_id
+        from auth.session_auth import get_session_auth_manager
         
-        # 現在のユーザーIDを取得
-        user_id = get_current_user_id()
-        
-        # ユーザー固有の認証マネージャーを取得
-        if user_id:
-            auth_manager = get_auth_manager(user_id)
-        else:
-            # 最初の認証時はデフォルトマネージャーもチェック
-            auth_manager = get_auth_manager()
-        
-        token = auth_manager.get_access_token()
-        
-        return token is not None
+        session_manager = get_session_auth_manager()
+        return session_manager.is_authenticated(request)
         
     except Exception as e:
         logger.error(f"Authentication check failed: {e}")
         return False
 
-def require_authentication():
+def require_authentication(request: Request):
     """認証を要求するデコレータ関数"""
-    if not check_authentication():
+    if not check_authentication(request):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required. Please login first.",
@@ -81,8 +69,8 @@ async def auth_middleware(request: Request, call_next):
         return response
     
     # APIエンドポイントでは基本的な認証状態をチェック
-    # サーバー側の認証状態を確認（Google OAuth トークンが有効かどうか）
-    if not check_authentication():
+    # セッションベースの認証状態を確認
+    if not check_authentication(request):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required. Please login first.",
