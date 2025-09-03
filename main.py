@@ -491,6 +491,18 @@ async def mcp_ada_logout():
         logger.error(f"MCP ADA logout error: {e}")
         return {"success": False, "error": str(e)}
 
+# セッション統計情報取得エンドポイント
+@app.get("/auth/sessions/stats")
+async def get_session_stats():
+    """セッション統計情報を取得"""
+    try:
+        from auth.session_auth import get_session_auth_manager
+        session_manager = get_session_auth_manager()
+        return session_manager.get_session_stats()
+    except Exception as e:
+        logger.error(f"Failed to get session stats: {e}")
+        return {"error": str(e)}
+
 # セッションクリーンアップのバックグラウンドタスク
 @app.on_event("startup")
 async def startup_event():

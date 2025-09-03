@@ -19,10 +19,10 @@ class GoogleAuthManager:
         
         # ユーザー固有のファイル名
         if user_id:
-            self.credentials_file = f"google_credentials_{user_id}.json"
+            self.credentials_file = f"auth_storage/google_auth/google_credentials_{user_id}.json"
         else:
             # 後方互換性のためのデフォルト
-            self.credentials_file = "google_credentials.json"
+            self.credentials_file = "auth_storage/google_auth/google_credentials.json"
             
         self.scopes = [
             'openid',
@@ -63,7 +63,7 @@ class GoogleAuthManager:
             }
         }
         
-        default_path = "client_secrets.json"
+        default_path = "auth_storage/google_auth/client_secrets.json"
         if not os.path.exists(default_path):
             with open(default_path, 'w') as f:
                 json.dump(default_secrets, f, indent=2)
