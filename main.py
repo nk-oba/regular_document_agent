@@ -146,10 +146,27 @@ async def oauth_callback(code: str = None, error: str = None):
         sys.path.append(os.path.dirname(__file__))
         from auth.google_auth import get_auth_manager
         
+        # 初回認証時はデフォルトマネージャーを使用（後でユーザー固有に移行）
         auth_manager = get_auth_manager()
         
         # 認証コードを使ってトークンを取得
         credentials = auth_manager.process_authorization_code(code)
+        
+        if credentials:
+            # 認証成功後、ユーザー情報を取得してユーザー固有の認証情報に移行
+            try:
+                is_authenticated, user_info = auth_manager.check_auth_status()
+                if is_authenticated and user_info:
+                    user_id = user_info.get("email", user_info.get("id"))
+                    if user_id:
+                        # ユーザー固有の認証マネージャーを取得
+                        user_auth_manager = get_auth_manager(user_id)
+                        # 認証情報をユーザー固有のファイルに保存
+                        user_auth_manager._save_credentials(credentials)
+                        logger.info(f"Credentials saved for user: {user_id}")
+            except Exception as e:
+                logger.warning(f"Failed to migrate credentials to user-specific file: {e}")
+                # エラーが発生してもメインの認証フローは継続
         
         if credentials:
             logger.info("OAuth credentials successfully obtained")
@@ -178,7 +195,15 @@ async def auth_status():
         sys.path.append(os.path.dirname(__file__))
         from auth.google_auth import get_auth_manager
         
-        auth_manager = get_auth_manager()
+        # 現在のユーザーIDを取得
+        user_id = get_current_user_id()
+        
+        # ユーザー固有の認証マネージャーを取得
+        if user_id:
+            auth_manager = get_auth_manager(user_id)
+        else:
+            # 最初の認証時はデフォルトマネージャーもチェック
+            auth_manager = get_auth_manager()
         
         # 認証状態のみをチェック（認証フローは開始しない）
         is_authenticated, user_info = auth_manager.check_auth_status()
@@ -198,16 +223,25 @@ async def auth_status():
 # Google OAuth2.0ログアウトエンドポイント
 @app.post("/auth/logout")
 async def logout():
-    """認証情報をクリア"""
+    """認証情報をクリア（ユーザー単位）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
         from auth.google_auth import get_auth_manager
         
-        auth_manager = get_auth_manager()
-        auth_manager.revoke_credentials()
+        # 現在のユーザーIDを取得
+        user_id = get_current_user_id()
         
-        return {"success": True, "message": "Logged out successfully"}
+        if user_id:
+            # ユーザー固有の認証マネージャーを取得
+            auth_manager = get_auth_manager(user_id)
+            auth_manager.revoke_credentials()
+            return {"success": True, "message": f"Logged out successfully for user {user_id}"}
+        else:
+            # デフォルトマネージャーの認証情報もクリア
+            auth_manager = get_auth_manager()
+            auth_manager.revoke_credentials()
+            return {"success": True, "message": "Logged out successfully"}
         
     except Exception as e:
         logger.error(f"Logout error: {e}")
@@ -222,7 +256,15 @@ async def start_oauth():
         sys.path.append(os.path.dirname(__file__))
         from auth.google_auth import get_auth_manager
         
-        auth_manager = get_auth_manager()
+        # 現在のユーザーIDを取得
+        user_id = get_current_user_id()
+        
+        # ユーザー固有の認証マネージャーを取得
+        if user_id:
+            auth_manager = get_auth_manager(user_id)
+        else:
+            # 最初の認証時はデフォルトマネージャーを使用
+            auth_manager = get_auth_manager()
         
         # 既存の認証情報をチェック（認証フローは開始しない）
         is_authenticated, user_info = auth_manager.check_auth_status()

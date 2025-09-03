@@ -4,7 +4,6 @@ import sys
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioServerParameters
 from google.adk.tools.mcp_tool import StreamableHTTPConnectionParams
 
-# パスを追加してauth モジュールをインポート可能にする
 sys.path.append(os.path.dirname(__file__))
 
 def get_google_access_token():

@@ -14,9 +14,16 @@ from google.oauth2.credentials import Credentials
 class GoogleAuthManager:
     """Google OAuth2.0認証を管理するクラス"""
     
-    def __init__(self):
+    def __init__(self, user_id: str = None):
         self.client_secrets_file = None
-        self.credentials_file = "google_credentials.json"
+        
+        # ユーザー固有のファイル名
+        if user_id:
+            self.credentials_file = f"google_credentials_{user_id}.json"
+        else:
+            # 後方互換性のためのデフォルト
+            self.credentials_file = "google_credentials.json"
+            
         self.scopes = [
             'openid',
             'https://www.googleapis.com/auth/adwords',
@@ -360,20 +367,25 @@ Google OAuth設定ファイルが作成されました: {default_path}
             os.remove(self.credentials_file)
             logging.info("Credentials revoked")
 
-# グローバルインスタンス
-_auth_manager = None
+# ユーザー単位のインスタンス管理
+_auth_managers = {}
 
-def get_auth_manager() -> GoogleAuthManager:
-    """認証マネージャーのシングルトンインスタンスを取得"""
-    global _auth_manager
-    if _auth_manager is None:
-        _auth_manager = GoogleAuthManager()
-    return _auth_manager
+def get_auth_manager(user_id: str = None) -> GoogleAuthManager:
+    """認証マネージャーのユーザー単位インスタンスを取得"""
+    global _auth_managers
+    
+    # user_idがない場合はデフォルト（後方互換性）
+    key = user_id or "default"
+    
+    if key not in _auth_managers:
+        _auth_managers[key] = GoogleAuthManager(user_id)
+    
+    return _auth_managers[key]
 
-def get_google_access_token(force_refresh=False) -> Optional[str]:
-    """Google アクセストークンを取得する便利関数"""
-    return get_auth_manager().get_access_token(force_refresh)
+def get_google_access_token(user_id: str = None, force_refresh=False) -> Optional[str]:
+    """Google アクセストークンを取得する便利関数（ユーザー単位）"""
+    return get_auth_manager(user_id).get_access_token(force_refresh)
 
-def get_google_id_token(force_refresh=False) -> Optional[str]:
-    """Google IDトークンを取得する便利関数（MCP ADA用）"""
-    return get_auth_manager().get_id_token(force_refresh)
+def get_google_id_token(user_id: str = None, force_refresh=False) -> Optional[str]:
+    """Google IDトークンを取得する便利関数（MCP ADA用、ユーザー単位）"""
+    return get_auth_manager(user_id).get_id_token(force_refresh)

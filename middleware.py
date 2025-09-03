@@ -11,13 +11,23 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
 def check_authentication() -> bool:
-    """認証状態をチェックする関数"""
+    """認証状態をチェックする関数（ユーザー単位）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
         from auth.google_auth import get_auth_manager
+        from main import get_current_user_id
         
-        auth_manager = get_auth_manager()
+        # 現在のユーザーIDを取得
+        user_id = get_current_user_id()
+        
+        # ユーザー固有の認証マネージャーを取得
+        if user_id:
+            auth_manager = get_auth_manager(user_id)
+        else:
+            # 最初の認証時はデフォルトマネージャーもチェック
+            auth_manager = get_auth_manager()
+        
         token = auth_manager.get_access_token()
         
         return token is not None
@@ -55,7 +65,9 @@ async def auth_middleware(request: Request, call_next):
         "/redoc",
         "/openapi.json",
         "/dev-ui/",
-        "/list-apps"
+        "/list-apps",
+        "/run",  # チャット機能のため一時的に追加
+        "/apps/"  # セッション管理エンドポイント
     ]
     
     # 静的ファイルや認証が不要なパスの場合はスキップ
