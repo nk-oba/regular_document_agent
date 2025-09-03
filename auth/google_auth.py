@@ -7,6 +7,7 @@ import json
 import logging
 import webbrowser
 from typing import Optional
+from pathlib import Path
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -45,9 +46,14 @@ class GoogleAuthManager:
             # 環境変数から動的にクライアントシークレットを作成
             self._create_client_secrets_from_env(client_id, client_secret)
         elif not self.client_secrets_file or not os.path.exists(self.client_secrets_file):
-            logging.warning("Google OAuth client secrets file not found")
-            # デフォルトの設定ファイル作成を促す
-            self._create_default_client_secrets()
+            # デフォルトのパスを設定
+            default_path = "auth_storage/google_auth/client_secrets.json"
+            if os.path.exists(default_path):
+                self.client_secrets_file = default_path
+            else:
+                logging.warning("Google OAuth client secrets file not found")
+                # デフォルトの設定ファイル作成を促す
+                self._create_default_client_secrets()
     
     def _create_default_client_secrets(self):
         """デフォルトのクライアントシークレット設定ファイルを作成"""
@@ -65,6 +71,8 @@ class GoogleAuthManager:
         
         default_path = "auth_storage/google_auth/client_secrets.json"
         if not os.path.exists(default_path):
+            # ディレクトリが存在しない場合は作成
+            os.makedirs(os.path.dirname(default_path), exist_ok=True)
             with open(default_path, 'w') as f:
                 json.dump(default_secrets, f, indent=2)
             
@@ -77,7 +85,7 @@ Google OAuth設定ファイルが作成されました: {default_path}
 3. APIとサービス > 認証情報 に移動
 4. OAuth 2.0 クライアントIDを作成 (デスクトップアプリケーション)
 5. クライアントIDとシークレットを{default_path}に記入
-6. 環境変数を設定: export GOOGLE_OAUTH_CLIENT_SECRETS="{os.path.abspath(default_path)}"
+6. 環境変数を設定: export GOOGLE_OAUTH_CLIENT_SECRETS="{os.path.abspath(os.path.join(os.getcwd(), default_path))}"
             """)
         
         self.client_secrets_file = default_path

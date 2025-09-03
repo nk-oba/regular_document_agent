@@ -10,6 +10,7 @@ import secrets
 import hashlib
 import base64
 from typing import Optional
+from pathlib import Path
 from urllib.parse import urlencode, parse_qs, urlparse
 import requests
 
@@ -25,10 +26,6 @@ class MCPADAAuthManager:
         if user_id:
             self.credentials_file = f"auth_storage/mcp_ada_auth/mcp_ada_credentials_{user_id}.json"
             self.client_credentials_file = f"auth_storage/mcp_ada_auth/mcp_ada_client_{user_id}.json"
-        else:
-            # 後方互換性のためのデフォルト
-            self.credentials_file = "auth_storage/mcp_ada_auth/mcp_ada_credentials.json"
-            self.client_credentials_file = "auth_storage/mcp_ada_auth/mcp_ada_client.json"
         self.scopes = ["mcp:reports", "mcp:properties"]
         # 環境変数でリダイレクトURIを設定可能にする
         # デフォルトは現在のホストとポートを使用
@@ -393,9 +390,7 @@ def get_mcp_ada_auth_manager(user_id: str = None) -> MCPADAAuthManager:
     """MCP ADA認証マネージャーのユーザー単位インスタンスを取得"""
     global _mcp_ada_auth_managers
     
-    # user_idがない場合はデフォルト（後方互換性）
-    key = user_id or "default"
-    
+    key = user_id
     if key not in _mcp_ada_auth_managers:
         _mcp_ada_auth_managers[key] = MCPADAAuthManager(user_id)
     

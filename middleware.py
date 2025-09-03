@@ -55,7 +55,9 @@ async def auth_middleware(request: Request, call_next):
         "/dev-ui/",
         "/list-apps",
         "/run",  # チャット機能のため一時的に追加
-        "/apps/"  # セッション管理エンドポイント
+        "/apps/",  # セッション管理エンドポイント
+        "/favicon.ico",  # ブラウザのファビコン要求
+        "/.well-known/"  # ブラウザ開発者ツール等の要求
     ]
     
     # 静的ファイルや認証が不要なパスの場合はスキップ

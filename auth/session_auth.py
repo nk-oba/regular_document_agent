@@ -21,6 +21,7 @@ class SessionAuthManager:
     """セッションベースの認証管理（改善版）"""
     
     def __init__(self):
+        # 現在のディレクトリから相対パスを使用
         self.sessions_dir = Path("auth_storage/sessions/auth_sessions")
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.session_timeout = 24 * 60 * 60  # 24時間
