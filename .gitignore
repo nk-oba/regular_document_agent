@@ -5,3 +5,5 @@ venv/
 .env
 config/*.json
 sessions.db
+auth_storage/
+!auth_storage/README.md
