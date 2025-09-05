@@ -45,10 +45,15 @@ def get_user_id_for_adk(request: Request) -> str:
         user_info = session_manager.get_user_info(request)
         
         if user_info and user_info.get("email"):
-            # emailをベースにした安定的なuser_id（16文字）
-            email = user_info["email"]
+            # emailをベースにした安定的なuser_id（16文字）- main.pyと同じロジック
+            email = user_info["email"].strip().lower()  # 正規化
             hash_object = hashlib.sha256(email.encode('utf-8'))
-            return hash_object.hexdigest()[:16]
+            adk_user_id = hash_object.hexdigest()[:16]
+            
+            # デバッグログ
+            logger.debug(f"Middleware generated ADK user ID: {adk_user_id} for email: {email[:5]}...")
+            
+            return adk_user_id
         
         return "anonymous"
         
@@ -81,6 +86,8 @@ async def auth_middleware(request: Request, call_next):
         "/auth/mcp-ada/start",
         "/auth/mcp-ada/logout",
         "/auth/mcp-ada/callback",
+        "/auth/debug/",  # デバッグエンドポイント
+        "/auth/verify/",  # 検証エンドポイント
         "/static",
         "/docs",
         "/redoc",

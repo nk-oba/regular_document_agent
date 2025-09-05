@@ -21,8 +21,15 @@ class SessionSyncManager:
         """emailから安定したADKユーザーIDを生成"""
         if not email:
             return "anonymous"
-        hash_object = hashlib.sha256(email.encode('utf-8'))
-        return hash_object.hexdigest()[:16]
+        
+        # 正規化して一貫性を保つ
+        normalized_email = email.strip().lower()
+        hash_object = hashlib.sha256(normalized_email.encode('utf-8'))
+        adk_user_id = hash_object.hexdigest()[:16]
+        
+        logger.debug(f"SessionSyncManager generated ADK user ID: {adk_user_id} for email: {normalized_email[:5]}...")
+        
+        return adk_user_id
     
     def _cleanup_adk_sessions_for_user(self, adk_user_id: str, preserve_chat_history: bool = True):
         """指定ユーザーの古いADKセッションをクリーンアップ（チャット履歴保持オプション付き）"""

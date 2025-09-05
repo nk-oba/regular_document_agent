@@ -212,13 +212,29 @@ def get_current_adk_user_id(request: Request = None) -> str:
         ADK用のユーザーID（16文字のハッシュ）
     """
     try:
-        # リクエストから既に設定されたADK user IDを取得
-        if request and hasattr(request, 'state') and hasattr(request.state, 'adk_user_id'):
-            return request.state.adk_user_id
+        # リクエストがない場合はanonymous
+        if not request:
+            return "anonymous"
         
-        # ミドルウェアのヘルパー関数を使用
-        from middleware import get_user_id_for_adk
-        return get_user_id_for_adk(request) if request else "anonymous"
+        # セッション情報から直接ユーザー情報を取得（最も確実な方法）
+        from auth.session_auth import get_session_auth_manager
+        
+        session_manager = get_session_auth_manager()
+        user_info = session_manager.get_user_info(request)
+        
+        if user_info and user_info.get("email"):
+            # emailをベースにした安定的なuser_id（16文字）
+            import hashlib
+            email = user_info["email"].strip().lower()  # 正規化
+            hash_object = hashlib.sha256(email.encode('utf-8'))
+            adk_user_id = hash_object.hexdigest()[:16]
+            
+            # デバッグログ
+            logger.debug(f"Generated ADK user ID: {adk_user_id} for email: {email[:5]}...")
+            
+            return adk_user_id
+        
+        return "anonymous"
         
     except Exception as e:
         logger.error(f"Failed to get ADK user ID: {e}")
@@ -381,7 +397,13 @@ async def logout(request: Request, response: Response):
         session_id = session_manager.get_session_id_from_request(request)
         
         if session_id:
-            # 統合セッション管理でのログアウトを試行
+            # ADKユーザーIDを事前に取得（セッション削除前に）
+            adk_user_id = get_current_adk_user_id(request)
+            
+            logger.info(f"Starting logout process - Session: {session_id}, ADK user: {adk_user_id}")
+            
+            # 1. 統合セッション管理での削除を試行
+            unified_logout_success = False
             try:
                 from auth.unified_session_manager import get_unified_session_manager
                 unified_manager = get_unified_session_manager()
@@ -389,25 +411,44 @@ async def logout(request: Request, response: Response):
                 if unified_manager.delete_unified_session(request):
                     unified_manager.clear_session_cookie(response)
                     logger.info(f"Unified logout completed - Session: {session_id}")
-                    return {"success": True, "message": "Logged out successfully"}
+                    unified_logout_success = True
             except Exception as e:
-                logger.warning(f"Unified logout failed, using sync manager: {e}")
+                logger.warning(f"Unified logout failed, using fallback: {e}")
+            
+            # 2. フォールバック処理または追加クリーンアップ
+            if not unified_logout_success:
+                # ADKセッションを明示的にクリーンアップ
+                if adk_user_id != "anonymous":
+                    sync_manager.on_logout(session_id, adk_user_id)
+                    logger.info(f"ADK sessions cleaned up for user: {adk_user_id}")
                 
-            # フォールバック: 従来のセッション同期処理
-            adk_user_id = get_current_adk_user_id(request)
-            sync_manager.on_logout(session_id, adk_user_id)
+                # ログインセッションを削除
+                session_manager.delete_session(session_id)
+                session_manager.clear_session_cookie(response)
+                
+                logger.info(f"Fallback logout completed - Session: {session_id}")
             
-            # ログインセッションを削除
-            session_manager.delete_session(session_id)
-            session_manager.clear_session_cookie(response)
-            
-            logger.info(f"Sync logout completed - Session: {session_id}, ADK user: {adk_user_id}")
-            return {"success": True, "message": "Logged out successfully"}
+            return {
+                "success": True, 
+                "message": "Logged out successfully",
+                "session_id": session_id,
+                "adk_user_id": adk_user_id,
+                "unified_logout": unified_logout_success
+            }
         else:
+            # セッションがない場合でもクッキーをクリア
+            session_manager.clear_session_cookie(response)
             return {"success": True, "message": "No active session found"}
         
     except Exception as e:
         logger.error(f"Logout error: {e}")
+        # エラーが発生してもクッキーはクリアする
+        try:
+            from auth.session_auth import get_session_auth_manager
+            session_manager = get_session_auth_manager()
+            session_manager.clear_session_cookie(response)
+        except:
+            pass
         return {"success": False, "error": str(e)}
 
 # Google OAuth2.0認証開始エンドポイント
@@ -766,6 +807,377 @@ async def get_adk_sessions_details(adk_user_id: str):
     except Exception as e:
         logger.error(f"Failed to get ADK sessions details: {e}")
         return {"error": str(e)}
+
+@app.get("/auth/chats")
+async def get_current_user_chats(request: Request):
+    """現在のユーザーのチャット一覧を取得"""
+    try:
+        from auth.unified_session_manager import get_unified_session_manager
+        
+        # 現在のユーザーのADKユーザーIDを取得
+        adk_user_id = get_current_adk_user_id(request)
+        if adk_user_id == "anonymous":
+            return {"error": "Authentication required", "authenticated": False}
+        
+        unified_manager = get_unified_session_manager()
+        sessions = unified_manager.get_adk_session_details(adk_user_id)
+        
+        return {
+            "authenticated": True,
+            "adk_user_id": adk_user_id,
+            "chats": sessions,
+            "chat_count": len(sessions)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get current user chats: {e}")
+        return {"error": str(e), "authenticated": False}
+
+@app.get("/auth/chats/with-history")
+async def get_current_user_chats_with_history(request: Request, include_archived: bool = False):
+    """現在のユーザーのチャット一覧を履歴情報と共に取得"""
+    try:
+        import sqlite3
+        from auth.unified_session_manager import get_unified_session_manager
+        
+        # 現在のユーザーのADKユーザーIDを取得
+        adk_user_id = get_current_adk_user_id(request)
+        if adk_user_id == "anonymous":
+            return {"error": "Authentication required", "authenticated": False}
+        
+        # ADKセッション（チャット）の詳細を取得
+        unified_manager = get_unified_session_manager()
+        sessions = unified_manager.get_adk_session_details(adk_user_id)
+        
+        # 各セッションにメッセージ履歴情報を追加
+        conn = sqlite3.connect(SESSION_DB_URL.replace('sqlite:///', ''))
+        cursor = conn.cursor()
+        
+        enhanced_chats = []
+        for session in sessions:
+            session_id = session["session_id"]
+            
+            # アクティブなメッセージ数を取得
+            cursor.execute("""
+                SELECT COUNT(*) as message_count, MAX(timestamp) as last_message_time
+                FROM events 
+                WHERE user_id = ? AND session_id = ? AND grounding_metadata NOT LIKE '%archived_at%'
+            """, (adk_user_id, session_id))
+            active_stats = cursor.fetchone()
+            
+            # アーカイブされたメッセージ数を取得（オプション）
+            archived_count = 0
+            if include_archived:
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM events 
+                    WHERE user_id = ? AND session_id = ? AND grounding_metadata LIKE '%archived_at%'
+                """, (adk_user_id, session_id))
+                archived_result = cursor.fetchone()
+                archived_count = archived_result[0] if archived_result else 0
+            
+            enhanced_chat = {
+                **session,
+                "message_count": active_stats[0] if active_stats else 0,
+                "last_message_time": active_stats[1] if active_stats else None,
+                "has_messages": (active_stats[0] if active_stats else 0) > 0
+            }
+            
+            if include_archived:
+                enhanced_chat["archived_message_count"] = archived_count
+            
+            enhanced_chats.append(enhanced_chat)
+        
+        conn.close()
+        
+        # チャットを最新メッセージ順にソート
+        enhanced_chats.sort(key=lambda x: x.get("last_message_time") or x.get("updated_at", ""), reverse=True)
+        
+        return {
+            "authenticated": True,
+            "adk_user_id": adk_user_id,
+            "chats": enhanced_chats,
+            "chat_count": len(enhanced_chats),
+            "include_archived": include_archived
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get current user chats with history: {e}")
+        return {"error": str(e), "authenticated": False}
+
+@app.delete("/auth/chats/{session_id}")
+async def delete_chat_session(session_id: str, request: Request):
+    """指定されたチャットセッションを削除"""
+    try:
+        import sqlite3
+        
+        # 現在のユーザーのADKユーザーIDを取得
+        adk_user_id = get_current_adk_user_id(request)
+        if adk_user_id == "anonymous":
+            return {"error": "Authentication required", "authenticated": False}
+        
+        # セッションが存在し、現在のユーザーのものかを確認
+        conn = sqlite3.connect(SESSION_DB_URL.replace('sqlite:///', ''))
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT COUNT(*) FROM sessions 
+            WHERE id = ? AND user_id = ?
+        """, (session_id, adk_user_id))
+        
+        session_exists = cursor.fetchone()[0] > 0
+        
+        if not session_exists:
+            conn.close()
+            return {
+                "success": False, 
+                "error": "Chat session not found or access denied",
+                "session_id": session_id
+            }
+        
+        # セッションとその関連データを削除
+        # FOREIGN KEY制約により、関連するeventsも自動削除される
+        cursor.execute("DELETE FROM sessions WHERE id = ? AND user_id = ?", (session_id, adk_user_id))
+        deleted_count = cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        if deleted_count > 0:
+            logger.info(f"Deleted chat session {session_id} for user {adk_user_id}")
+            return {
+                "success": True,
+                "message": "Chat session deleted successfully",
+                "session_id": session_id
+            }
+        else:
+            return {
+                "success": False,
+                "error": "Failed to delete chat session",
+                "session_id": session_id
+            }
+        
+    except Exception as e:
+        logger.error(f"Failed to delete chat session {session_id}: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.get("/auth/debug/user-info")
+async def debug_user_info(request: Request):
+    """デバッグ用：現在のユーザー識別情報を詳細表示"""
+    try:
+        from auth.session_auth import get_session_auth_manager
+        
+        # セッション情報を取得
+        session_manager = get_session_auth_manager()
+        session_id = session_manager.get_session_id_from_request(request)
+        user_info = session_manager.get_user_info(request)
+        
+        # ADKユーザーID生成
+        adk_user_id = get_current_adk_user_id(request)
+        
+        # ミドルウェアからの情報
+        middleware_adk_user_id = "unknown"
+        try:
+            from middleware import get_user_id_for_adk
+            middleware_adk_user_id = get_user_id_for_adk(request)
+        except Exception as e:
+            middleware_adk_user_id = f"error: {str(e)}"
+        
+        # emailからハッシュを直接計算
+        email_hash = "no_email"
+        if user_info and user_info.get("email"):
+            import hashlib
+            email = user_info["email"]
+            hash_object = hashlib.sha256(email.encode('utf-8'))
+            email_hash = hash_object.hexdigest()[:16]
+        
+        return {
+            "session_id": session_id,
+            "user_info": user_info,
+            "adk_user_id_main": adk_user_id,
+            "adk_user_id_middleware": middleware_adk_user_id,
+            "email_hash_direct": email_hash,
+            "cookies": dict(request.cookies),
+            "authenticated": user_info is not None,
+            "request_state": {
+                "has_state": hasattr(request, 'state'),
+                "adk_user_id_from_state": getattr(request.state, 'adk_user_id', 'not_set') if hasattr(request, 'state') else 'no_state'
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get debug user info: {e}")
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
+@app.get("/auth/debug/sessions-comparison")
+async def debug_sessions_comparison(request: Request):
+    """デバッグ用：セッション管理システムの比較"""
+    try:
+        import sqlite3
+        from auth.session_auth import get_session_auth_manager
+        from auth.unified_session_manager import get_unified_session_manager
+        
+        # 現在のユーザー情報
+        session_manager = get_session_auth_manager()
+        user_info = session_manager.get_user_info(request)
+        login_session_id = session_manager.get_session_id_from_request(request)
+        
+        if not user_info:
+            return {"error": "Not authenticated", "authenticated": False}
+        
+        email = user_info.get("email")
+        if not email:
+            return {"error": "No email found", "user_info": user_info}
+        
+        # ADKユーザーIDの生成
+        import hashlib
+        hash_object = hashlib.sha256(email.encode('utf-8'))
+        expected_adk_user_id = hash_object.hexdigest()[:16]
+        
+        # 各種ユーザーID取得方法の比較
+        adk_user_id_main = get_current_adk_user_id(request)
+        
+        # データベースの実際のデータを確認
+        conn = sqlite3.connect(SESSION_DB_URL.replace('sqlite:///', ''))
+        cursor = conn.cursor()
+        
+        # 全セッション情報
+        cursor.execute("SELECT user_id, id, app_name, create_time, update_time FROM sessions")
+        all_sessions = cursor.fetchall()
+        
+        # 現在のユーザーのセッション
+        cursor.execute("SELECT user_id, id, app_name, create_time, update_time FROM sessions WHERE user_id = ?", (expected_adk_user_id,))
+        user_sessions = cursor.fetchall()
+        
+        # eventsテーブルの確認
+        cursor.execute("SELECT DISTINCT user_id FROM events")
+        users_with_events = cursor.fetchall()
+        
+        # 現在のユーザーのイベント数
+        cursor.execute("SELECT COUNT(*) FROM events WHERE user_id = ?", (expected_adk_user_id,))
+        user_event_count = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        # 統合セッション情報
+        unified_manager = get_unified_session_manager()
+        unified_session_info = unified_manager.get_unified_session_info(request)
+        
+        return {
+            "authentication": {
+                "authenticated": True,
+                "email": email,
+                "user_info": user_info,
+                "login_session_id": login_session_id
+            },
+            "adk_user_ids": {
+                "expected": expected_adk_user_id,
+                "from_main_function": adk_user_id_main,
+                "match": expected_adk_user_id == adk_user_id_main
+            },
+            "database_state": {
+                "total_sessions": len(all_sessions),
+                "user_sessions": len(user_sessions),
+                "user_event_count": user_event_count,
+                "all_sessions": [
+                    {
+                        "user_id": s[0], 
+                        "session_id": s[1], 
+                        "app_name": s[2],
+                        "created": s[3],
+                        "updated": s[4]
+                    } for s in all_sessions
+                ],
+                "user_sessions": [
+                    {
+                        "user_id": s[0], 
+                        "session_id": s[1], 
+                        "app_name": s[2],
+                        "created": s[3],
+                        "updated": s[4]
+                    } for s in user_sessions
+                ],
+                "users_with_events": [u[0] for u in users_with_events]
+            },
+            "unified_session": unified_session_info
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to debug sessions comparison: {e}")
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
+@app.get("/auth/verify/consistency")
+async def verify_user_id_consistency(request: Request):
+    """ユーザーID生成の一貫性を検証"""
+    try:
+        from auth.session_auth import get_session_auth_manager
+        from auth.unified_session_manager import get_unified_session_manager
+        from auth.session_sync_manager import get_session_sync_manager
+        from middleware import get_user_id_for_adk
+        import hashlib
+        
+        # セッション情報を取得
+        session_manager = get_session_auth_manager()
+        user_info = session_manager.get_user_info(request)
+        
+        if not user_info or not user_info.get("email"):
+            return {"error": "Not authenticated or no email", "authenticated": False}
+        
+        email = user_info["email"]
+        normalized_email = email.strip().lower()
+        
+        # 各システムでのユーザーID生成をテスト
+        results = {}
+        
+        # 1. main.py の get_current_adk_user_id
+        results["main_function"] = get_current_adk_user_id(request)
+        
+        # 2. middleware の get_user_id_for_adk
+        results["middleware"] = get_user_id_for_adk(request)
+        
+        # 3. 統合セッション管理
+        unified_manager = get_unified_session_manager()
+        results["unified_manager"] = unified_manager._get_stable_adk_user_id(email)
+        
+        # 4. セッション同期管理
+        sync_manager = get_session_sync_manager()
+        results["sync_manager"] = sync_manager._get_stable_adk_user_id(email)
+        
+        # 5. 直接計算（期待値）
+        hash_object = hashlib.sha256(normalized_email.encode('utf-8'))
+        expected = hash_object.hexdigest()[:16]
+        results["expected"] = expected
+        
+        # 一貫性チェック
+        all_values = list(results.values())
+        is_consistent = all(value == expected for value in all_values)
+        
+        # 不一致の特定
+        inconsistent_systems = []
+        for system, value in results.items():
+            if value != expected:
+                inconsistent_systems.append({"system": system, "value": value, "expected": expected})
+        
+        return {
+            "email": email,
+            "normalized_email": normalized_email,
+            "results": results,
+            "is_consistent": is_consistent,
+            "expected_value": expected,
+            "inconsistent_systems": inconsistent_systems,
+            "summary": {
+                "total_systems": len(results),
+                "consistent_systems": len([v for v in all_values if v == expected]),
+                "inconsistent_systems": len(inconsistent_systems)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to verify user ID consistency: {e}")
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 @app.post("/auth/unified/adk-session/create")
 async def force_create_adk_session(request: Request, app_name: str = "document_creating_agent"):
