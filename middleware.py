@@ -2,19 +2,23 @@
 認証ミドルウェアの実装
 """
 import os
+import hashlib
 import logging
 from fastapi import HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer
 from fastapi import Request
 
 logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
+# パフォーマンス最適化：初回実行時のみsys.pathを設定
+import sys
+if os.path.dirname(__file__) not in sys.path:
+    sys.path.append(os.path.dirname(__file__))
+
 def check_authentication(request: Request) -> bool:
     """セッションベースの認証状態をチェックする関数"""
     try:
-        import sys
-        sys.path.append(os.path.dirname(__file__))
         from auth.session_auth import get_session_auth_manager
         
         session_manager = get_session_auth_manager()
@@ -23,6 +27,34 @@ def check_authentication(request: Request) -> bool:
     except Exception as e:
         logger.error(f"Authentication check failed: {e}")
         return False
+
+def get_user_id_for_adk(request: Request) -> str:
+    """ADK用の安定したユーザーID生成
+    
+    Args:
+        request: FastAPIのRequestオブジェクト
+    
+    Returns:
+        ADK用の一意で安定したユーザーID（16文字のハッシュ）
+        認証されていない場合は "anonymous"
+    """
+    try:
+        from auth.session_auth import get_session_auth_manager
+        
+        session_manager = get_session_auth_manager()
+        user_info = session_manager.get_user_info(request)
+        
+        if user_info and user_info.get("email"):
+            # emailをベースにした安定的なuser_id（16文字）
+            email = user_info["email"]
+            hash_object = hashlib.sha256(email.encode('utf-8'))
+            return hash_object.hexdigest()[:16]
+        
+        return "anonymous"
+        
+    except Exception as e:
+        logger.error(f"Failed to generate ADK user ID: {e}")
+        return "anonymous"
 
 def require_authentication(request: Request):
     """認証を要求するデコレータ関数"""
@@ -37,6 +69,7 @@ async def auth_middleware(request: Request, call_next):
     """
     認証ミドルウェア
     認証が必要なエンドポイントをチェック
+    ADKセッション用のユーザー識別情報も設定
     """
     # 認証が不要なパス
     public_paths = [
@@ -78,6 +111,27 @@ async def auth_middleware(request: Request, call_next):
             detail="Authentication required. Please login first.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    
+    # 認証されたユーザーの場合、ADK用のユーザー識別情報をリクエストに追加
+    try:
+        # ADK用の安定したユーザーIDを生成
+        adk_user_id = get_user_id_for_adk(request)
+        
+        # リクエストstateにユーザーIDを安全に保存
+        request.state.user_id = adk_user_id
+        request.state.adk_user_id = adk_user_id
+        
+        # デバッグログ（本番環境では無効化推奨）
+        if adk_user_id != "anonymous":
+            logger.debug(f"Set ADK user ID for authenticated session: {adk_user_id[:8]}...")
+        else:
+            logger.debug("Set ADK user ID: anonymous (no authentication)")
+            
+    except Exception as e:
+        logger.error(f"Failed to set ADK user ID: {e}")
+        # セキュアなフォールバック
+        request.state.user_id = "anonymous"
+        request.state.adk_user_id = "anonymous"
     
     response = await call_next(request)
     return response

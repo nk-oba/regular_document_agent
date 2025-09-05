@@ -1,30 +1,89 @@
 import os
+import asyncio
+import time
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from google.adk.cli.fast_api import get_fast_api_app
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Response
+from fastapi import FastAPI, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from middleware import auth_middleware
-from google.adk.artifacts import InMemoryArtifactService
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-import json
-import asyncio
-from typing import List, Optional
+from typing import Optional
 import logging
-import re
-from fastapi import Request
 
 # ログ設定
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# バックグラウンドタスク用のグローバル変数
+background_task = None
+
+async def session_cleanup_task():
+    """セッションクリーンアップのバックグラウンドタスク"""
+    from auth.session_auth import get_session_auth_manager
+    from auth.session_sync_manager import get_session_sync_manager
+    
+    while True:
+        try:
+            # ログインセッションのクリーンアップ
+            session_manager = get_session_auth_manager()
+            session_manager.cleanup_expired_sessions()
+            
+            # 孤立ADKセッションのクリーンアップ（3時間おき）
+            current_time = int(time.time())
+            if current_time % (3 * 3600) < 60:  # 3時間の境界で実行
+                sync_manager = get_session_sync_manager()
+                orphaned_count = sync_manager.cleanup_orphaned_adk_sessions()
+                if orphaned_count > 0:
+                    logger.info(f"Background cleanup: removed {orphaned_count} orphaned ADK sessions")
+            
+            # 古いアーカイブチャットのクリーンアップ（24時間おき）
+            if current_time % (24 * 3600) < 60:  # 24時間の境界で実行
+                sync_manager = get_session_sync_manager()
+                archived_deleted = sync_manager.cleanup_old_archived_chats(90)  # 90日以上古いもの
+                if archived_deleted > 0:
+                    logger.info(f"Background cleanup: removed {archived_deleted} old archived chats")
+            
+            await asyncio.sleep(3600)  # 1時間ごと
+        except Exception as e:
+            logger.error(f"Session cleanup error: {e}")
+            await asyncio.sleep(3600)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPIアプリのライフスパン管理"""
+    global background_task
+    
+    # 起動時の処理
+    logger.info("Starting FastAPI application")
+    
+    # バックグラウンドタスクを開始
+    try:
+        background_task = asyncio.create_task(session_cleanup_task())
+        logger.info("Successfully started session cleanup task")
+    except Exception as e:
+        logger.warning(f"Could not start session cleanup: {e}")
+    
+    yield
+    
+    # 終了時の処理
+    logger.info("Shutting down FastAPI application")
+    if background_task:
+        background_task.cancel()
+        try:
+            await background_task
+        except asyncio.CancelledError:
+            logger.info("Session cleanup task cancelled")
+
 # agent engone parameters
 AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agents")
 SESSION_DB_URL = "sqlite:///./sessions.db"
 ARTIFACT_URL = "gs://dev-datap-agent-bucket"
+
+# セッション管理設定
+USE_UNIFIED_SESSION_MANAGEMENT = os.getenv("USE_UNIFIED_SESSION_MANAGEMENT", "true").lower() == "true"
 ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000", 
     "http://localhost:3000", 
@@ -56,7 +115,8 @@ try:
             session_service_uri=SESSION_DB_URL,
             artifact_service_uri=ARTIFACT_URL,  # GCSを使用
             allow_origins=ALLOWED_ORIGINS,
-            web=SERVE_WEB_INTERFACE
+            web=SERVE_WEB_INTERFACE,
+            lifespan=lifespan
         )
     else:
         logger.info("Using InMemory Artifact Service (no GCS credentials found)")
@@ -65,9 +125,9 @@ try:
             session_service_uri=SESSION_DB_URL,
             # artifact_service_uri=ARTIFACT_URL,  # InMemoryを使用
             allow_origins=ALLOWED_ORIGINS,
-            web=SERVE_WEB_INTERFACE
+            web=SERVE_WEB_INTERFACE,
+            lifespan=lifespan
         )
-    logger.info("Successfully created FastAPI app")
 except Exception as e:
     logger.error(f"Failed to create FastAPI app: {str(e)}")
     import traceback
@@ -102,33 +162,32 @@ app.add_middleware(
 
 logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
 
-# ユーザーIDを取得するヘルパー関数（セッションベース）
-def get_current_user_id(request: Request) -> Optional[str]:
-    """現在認証されているユーザーのIDを取得（セッションベース）"""
+# 統一されたユーザー識別ヘルパー関数
+def get_current_user_id(request: Request = None) -> Optional[str]:
+    """現在認証されているユーザーのIDを取得
+    
+    Args:
+        request: FastAPIのRequestオブジェクト（セッション認証用）
+                Noneの場合はMCP用の認証情報を使用
+    
+    Returns:
+        ユーザーID（email）またはNone
+    """
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
-        from auth.session_auth import get_session_auth_manager
         
-        session_manager = get_session_auth_manager()
-        user_info = session_manager.get_user_info(request)
+        # リクエストがある場合はセッションベース認証を優先
+        if request is not None:
+            from auth.session_auth import get_session_auth_manager
+            
+            session_manager = get_session_auth_manager()
+            user_info = session_manager.get_user_info(request)
+            
+            if user_info:
+                return user_info.get("email", user_info.get("id"))
         
-        if user_info:
-            # ユーザーIDとしてemailを使用（一意性を保証）
-            return user_info.get("email", user_info.get("id"))
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Failed to get current user ID: {e}")
-        return None
-
-# MCP認証用の従来のユーザーID取得関数（ユーザー共通のため維持）
-def get_current_user_id_for_mcp() -> Optional[str]:
-    """MCP認証用のユーザーIDを取得（ユーザー共通）"""
-    try:
-        import sys
-        sys.path.append(os.path.dirname(__file__))
+        # フォールバックとしてMCP認証を使用
         from auth.google_auth import get_auth_manager
         
         auth_manager = get_auth_manager()
@@ -140,17 +199,62 @@ def get_current_user_id_for_mcp() -> Optional[str]:
         return None
         
     except Exception as e:
-        logger.error(f"Failed to get current user ID for MCP: {e}")
+        logger.error(f"Failed to get current user ID: {e}")
         return None
+
+def get_current_adk_user_id(request: Request = None) -> str:
+    """ADK用の安定したユーザーIDを取得
+    
+    Args:
+        request: FastAPIのRequestオブジェクト
+    
+    Returns:
+        ADK用のユーザーID（16文字のハッシュ）
+    """
+    try:
+        # リクエストから既に設定されたADK user IDを取得
+        if request and hasattr(request, 'state') and hasattr(request.state, 'adk_user_id'):
+            return request.state.adk_user_id
+        
+        # ミドルウェアのヘルパー関数を使用
+        from middleware import get_user_id_for_adk
+        return get_user_id_for_adk(request) if request else "anonymous"
+        
+    except Exception as e:
+        logger.error(f"Failed to get ADK user ID: {e}")
+        return "anonymous"
+
+# MCP認証用の互換性維持関数
+def get_current_user_id_for_mcp() -> Optional[str]:
+    """MCP認証用のユーザーIDを取得（互換性維持）"""
+    return get_current_user_id(request=None)
 
 # 手動でOPTIONSリクエストに対応
 @app.options("/{path:path}")
 async def options_handler():
     return {"message": "OK"}
 
+# ADKユーザーID確認用エンドポイント
+@app.get("/auth/adk-user-id")
+async def get_adk_user_id_status(request: Request):
+    """現在のADKユーザーIDステータスを確認"""
+    try:
+        adk_user_id = get_current_adk_user_id(request)
+        user_email = get_current_user_id(request)
+        
+        return {
+            "adk_user_id": adk_user_id,
+            "user_email": user_email,
+            "authenticated": adk_user_id != "anonymous",
+            "stable_id_generated": len(adk_user_id) == 16 and adk_user_id != "anonymous"
+        }
+    except Exception as e:
+        logger.error(f"Failed to get ADK user ID status: {e}")
+        return {"error": str(e)}
+
 # Google OAuth2.0コールバックエンドポイント
 @app.get("/auth/callback")
-async def oauth_callback(request: Request, code: str = None, error: str = None):
+async def oauth_callback(request: Request, code: Optional[str] = None, error: Optional[str] = None):
     """Google OAuth2.0認証コールバック（セッションベース）"""
     if error:
         return {"error": f"Authentication failed: {error}"}
@@ -184,9 +288,28 @@ async def oauth_callback(request: Request, code: str = None, error: str = None):
                     "name": user_info.get("name", user_info.get("email", "Unknown"))
                 }
                 
-                # セッション管理システムに認証情報を保存
-                session_manager = get_session_auth_manager()
-                session_id = session_manager.create_session(user_data, credentials)
+                # セッション管理方式の選択
+                if USE_UNIFIED_SESSION_MANAGEMENT:
+                    # 統合セッション管理を使用（フォールバック付き）
+                    try:
+                        from auth.unified_session_manager import get_unified_session_manager
+                        unified_manager = get_unified_session_manager()
+                        unified_session = unified_manager.create_unified_session(user_data, credentials)
+                        session_id = unified_session["login_session_id"]
+                        adk_user_id = unified_session["adk_user_id"]
+                        logger.info(f"Using unified session management")
+                    except Exception as e:
+                        logger.warning(f"Unified session failed, using sync manager: {e}")
+                        # フォールバック: 従来のセッション同期管理
+                        from auth.session_sync_manager import get_session_sync_manager
+                        sync_manager = get_session_sync_manager()
+                        session_id, adk_user_id = sync_manager.on_login(user_data, credentials)
+                else:
+                    # 従来のセッション同期管理を使用
+                    from auth.session_sync_manager import get_session_sync_manager
+                    sync_manager = get_session_sync_manager()
+                    session_id, adk_user_id = sync_manager.on_login(user_data, credentials)
+                    logger.info(f"Using sync session management")
                 
                 # MCP用の従来システムにも保存（ユーザー共通）
                 user_id = user_data.get("email", user_data.get("id"))
@@ -195,9 +318,10 @@ async def oauth_callback(request: Request, code: str = None, error: str = None):
                     user_auth_manager._save_credentials(credentials)
                     logger.info(f"Credentials saved for MCP user: {user_id}")
                 
-                logger.info(f"Session created for user: {user_data.get('email')}")
+                logger.info(f"Unified session created - Login: {session_id}, ADK user: {adk_user_id}")
                 
                 # セッションクッキー付きでリダイレクト
+                session_manager = get_session_auth_manager()
                 response = RedirectResponse(url="http://localhost:3000", status_code=302)
                 session_manager.set_session_cookie(response, session_id)
                 return response
@@ -248,16 +372,36 @@ async def auth_status(request: Request):
 async def logout(request: Request, response: Response):
     """認証情報をクリア（セッションベース）"""
     try:
-        import sys
-        sys.path.append(os.path.dirname(__file__))
         from auth.session_auth import get_session_auth_manager
+        from auth.session_sync_manager import get_session_sync_manager
         
         session_manager = get_session_auth_manager()
+        sync_manager = get_session_sync_manager()
+        
         session_id = session_manager.get_session_id_from_request(request)
         
         if session_id:
+            # 統合セッション管理でのログアウトを試行
+            try:
+                from auth.unified_session_manager import get_unified_session_manager
+                unified_manager = get_unified_session_manager()
+                
+                if unified_manager.delete_unified_session(request):
+                    unified_manager.clear_session_cookie(response)
+                    logger.info(f"Unified logout completed - Session: {session_id}")
+                    return {"success": True, "message": "Logged out successfully"}
+            except Exception as e:
+                logger.warning(f"Unified logout failed, using sync manager: {e}")
+                
+            # フォールバック: 従来のセッション同期処理
+            adk_user_id = get_current_adk_user_id(request)
+            sync_manager.on_logout(session_id, adk_user_id)
+            
+            # ログインセッションを削除
             session_manager.delete_session(session_id)
             session_manager.clear_session_cookie(response)
+            
+            logger.info(f"Sync logout completed - Session: {session_id}, ADK user: {adk_user_id}")
             return {"success": True, "message": "Logged out successfully"}
         else:
             return {"success": True, "message": "No active session found"}
@@ -390,7 +534,11 @@ async def start_mcp_ada_oauth():
         
         # 認証URLを生成してフロントエンドに返す
         try:
-            auth_url, state, code_verifier = auth_manager.generate_auth_url()
+            auth_result = auth_manager.generate_auth_url()
+            if len(auth_result) == 3:
+                auth_url, state, _ = auth_result  # code_verifierは使用しないため無視
+            else:
+                auth_url, state = auth_result
             
             return {
                 "success": True,
@@ -493,37 +641,233 @@ async def mcp_ada_logout():
 
 # セッション統計情報取得エンドポイント
 @app.get("/auth/sessions/stats")
-async def get_session_stats():
-    """セッション統計情報を取得"""
+async def get_session_stats(request: Request):
+    """統合セッション統計情報を取得"""
     try:
-        from auth.session_auth import get_session_auth_manager
-        session_manager = get_session_auth_manager()
-        return session_manager.get_session_stats()
+        from auth.session_sync_manager import get_session_sync_manager
+        
+        sync_manager = get_session_sync_manager()
+        adk_user_id = get_current_adk_user_id(request)
+        
+        return sync_manager.get_session_stats(adk_user_id if adk_user_id != "anonymous" else None)
     except Exception as e:
         logger.error(f"Failed to get session stats: {e}")
         return {"error": str(e)}
 
+# 孤立セッションクリーンアップエンドポイント
+@app.post("/auth/sessions/cleanup")
+async def cleanup_orphaned_sessions():
+    """孤立したADKセッション（対応するログインセッションがない）をクリーンアップ"""
+    try:
+        from auth.session_sync_manager import get_session_sync_manager
+        
+        sync_manager = get_session_sync_manager()
+        deleted_count = sync_manager.cleanup_orphaned_adk_sessions()
+        
+        return {
+            "success": True,
+            "deleted_sessions": deleted_count,
+            "message": f"Cleaned up {deleted_count} orphaned ADK sessions"
+        }
+    except Exception as e:
+        logger.error(f"Failed to cleanup orphaned sessions: {e}")
+        return {"success": False, "error": str(e)}
+
+# ADKセッション状況確認エンドポイント
+@app.get("/auth/adk-sessions/stats")
+async def get_adk_session_stats(request: Request):
+    """ADKセッションの統計情報を取得"""
+    try:
+        import sqlite3
+        
+        # 現在のユーザーのADKユーザーIDを取得
+        adk_user_id = get_current_adk_user_id(request)
+        
+        # ADKデータベースに接続
+        conn = sqlite3.connect(SESSION_DB_URL.replace('sqlite:///', ''))
+        cursor = conn.cursor()
+        
+        # 全体の統計
+        cursor.execute("SELECT COUNT(DISTINCT user_id) as total_users, COUNT(*) as total_sessions FROM sessions")
+        total_stats = cursor.fetchone()
+        
+        # 現在のユーザーのセッション統計
+        cursor.execute("""
+            SELECT COUNT(*) as user_sessions, MAX(update_time) as last_activity 
+            FROM sessions 
+            WHERE user_id = ?
+        """, (adk_user_id,))
+        user_stats = cursor.fetchone()
+        
+        # ユーザーIDごとのセッション数
+        cursor.execute("""
+            SELECT user_id, COUNT(*) as session_count 
+            FROM sessions 
+            GROUP BY user_id
+            ORDER BY session_count DESC
+        """)
+        user_breakdown = cursor.fetchall()
+        
+        conn.close()
+        
+        return {
+            "current_adk_user_id": adk_user_id,
+            "total_users": total_stats[0] if total_stats else 0,
+            "total_adk_sessions": total_stats[1] if total_stats else 0,
+            "current_user_sessions": user_stats[0] if user_stats else 0,
+            "last_activity": user_stats[1] if user_stats else None,
+            "user_breakdown": [
+                {"user_id": row[0], "session_count": row[1]} 
+                for row in user_breakdown
+            ]
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get ADK session stats: {e}")
+        return {"error": str(e)}
+
+# 統合セッション管理エンドポイント
+@app.get("/auth/unified/session")
+async def get_unified_session(request: Request):
+    """現在の統合セッション情報を取得"""
+    try:
+        from auth.unified_session_manager import get_unified_session_manager
+        
+        unified_manager = get_unified_session_manager()
+        session_info = unified_manager.get_unified_session_info(request)
+        
+        if session_info:
+            return {
+                "authenticated": True,
+                "session_info": session_info
+            }
+        else:
+            return {"authenticated": False}
+            
+    except Exception as e:
+        logger.error(f"Failed to get unified session: {e}")
+        return {"authenticated": False, "error": str(e)}
+
+@app.get("/auth/unified/adk-sessions/{adk_user_id}")
+async def get_adk_sessions_details(adk_user_id: str):
+    """指定ユーザーのADKセッション詳細を取得"""
+    try:
+        from auth.unified_session_manager import get_unified_session_manager
+        
+        unified_manager = get_unified_session_manager()
+        sessions = unified_manager.get_adk_session_details(adk_user_id)
+        
+        return {
+            "adk_user_id": adk_user_id,
+            "sessions": sessions,
+            "session_count": len(sessions)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get ADK sessions details: {e}")
+        return {"error": str(e)}
+
+@app.post("/auth/unified/adk-session/create")
+async def force_create_adk_session(request: Request, app_name: str = "document_creating_agent"):
+    """ADKセッションを強制作成（管理・テスト用）"""
+    try:
+        from auth.unified_session_manager import get_unified_session_manager
+        
+        unified_manager = get_unified_session_manager()
+        session_info = unified_manager.get_unified_session_info(request)
+        
+        if not session_info:
+            return {"success": False, "error": "Not authenticated"}
+        
+        adk_user_id = session_info["adk_user_id"]
+        session_id = unified_manager.force_create_adk_session(adk_user_id, app_name)
+        
+        if session_id:
+            return {
+                "success": True,
+                "session_id": session_id,
+                "adk_user_id": adk_user_id,
+                "app_name": app_name
+            }
+        else:
+            return {"success": False, "error": "Failed to create ADK session"}
+        
+    except Exception as e:
+        logger.error(f"Failed to force create ADK session: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.get("/auth/unified/stats")
+async def get_unified_stats():
+    """統合セッション統計を取得"""
+    try:
+        from auth.unified_session_manager import get_unified_session_manager
+        
+        unified_manager = get_unified_session_manager()
+        return unified_manager.get_unified_stats()
+        
+    except Exception as e:
+        logger.error(f"Failed to get unified stats: {e}")
+        return {"error": str(e)}
+
+# チャット履歴管理エンドポイント
+@app.get("/auth/chat-history/archived")
+async def get_archived_chat_history(request: Request, limit: int = 50):
+    """現在のユーザーのアーカイブされたチャット履歴を取得"""
+    try:
+        from auth.session_sync_manager import get_session_sync_manager
+        
+        adk_user_id = get_current_adk_user_id(request)
+        if adk_user_id == "anonymous":
+            return {"error": "Authentication required"}
+        
+        sync_manager = get_session_sync_manager()
+        history = sync_manager.get_archived_chat_history(adk_user_id, limit)
+        
+        return {
+            "adk_user_id": adk_user_id,
+            "archived_history": history,
+            "count": len(history)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get archived chat history: {e}")
+        return {"error": str(e)}
+
+@app.get("/auth/chat-history/stats")
+async def get_archived_chat_stats():
+    """アーカイブチャット統計情報を取得"""
+    try:
+        from auth.session_sync_manager import get_session_sync_manager
+        
+        sync_manager = get_session_sync_manager()
+        return sync_manager.get_archived_chat_stats()
+        
+    except Exception as e:
+        logger.error(f"Failed to get archived chat stats: {e}")
+        return {"error": str(e)}
+
+@app.post("/auth/chat-history/cleanup")
+async def cleanup_old_archived_chats(days_to_keep: int = 90):
+    """古いアーカイブチャットをクリーンアップ"""
+    try:
+        from auth.session_sync_manager import get_session_sync_manager
+        
+        sync_manager = get_session_sync_manager()
+        deleted_count = sync_manager.cleanup_old_archived_chats(days_to_keep)
+        
+        return {
+            "success": True,
+            "deleted_count": deleted_count,
+            "days_kept": days_to_keep,
+            "message": f"Cleaned up {deleted_count} old archived chats (older than {days_to_keep} days)"
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to cleanup old archived chats: {e}")
+        return {"success": False, "error": str(e)}
+
 # セッションクリーンアップのバックグラウンドタスク
-@app.on_event("startup")
-async def startup_event():
-    """アプリケーション起動時の処理"""
-    import asyncio
-    from auth.session_auth import get_session_auth_manager
-    
-    async def cleanup_sessions():
-        """期限切れセッションの定期クリーンアップ"""
-        while True:
-            try:
-                session_manager = get_session_auth_manager()
-                session_manager.cleanup_expired_sessions()
-                await asyncio.sleep(3600)  # 1時間ごとにクリーンアップ
-            except Exception as e:
-                logger.error(f"Session cleanup error: {e}")
-                await asyncio.sleep(3600)
-    
-    # バックグラウンドタスクを開始
-    asyncio.create_task(cleanup_sessions())
-    logger.info("Session cleanup task started")
+# Note: FastAPIのlifespanイベントを使用してバックグラウンドタスクを管理
 
 if __name__ == "__main__":
     logger.info("Starting application...")
