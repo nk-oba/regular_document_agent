@@ -3,7 +3,7 @@ Artifact Service Module
 Handles all artifact-related operations including loading, processing, and streaming.
 """
 import logging
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Optional, Tuple, List, Any
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -50,10 +50,16 @@ class ArtifactService:
                 gcs_service, app_name, user_id, artifact_name, version, attempted_paths
             )
         
-        # Pattern 3: Handle test user_id
-        if not artifact and user_id == "test":
+        # Pattern 3: Handle invalid or unusual user_id formats
+        if not artifact and (user_id == "test" or len(user_id) != 16 or not user_id.isalnum()):
             artifact = await self._try_load_pattern_3(
                 gcs_service, app_name, artifact_name, version, attempted_paths
+            )
+            
+        # Pattern 4: Try with session_id as a search key across all users
+        if not artifact:
+            artifact = await self._try_load_pattern_4(
+                gcs_service, app_name, session_id, artifact_name, version, attempted_paths
             )
         
         return artifact, attempted_paths
@@ -201,6 +207,58 @@ class ArtifactService:
         
         return None
     
+    async def _try_load_pattern_4(
+        self,
+        gcs_service,
+        app_name: str,
+        session_id: str,
+        artifact_name: str,
+        version: Optional[int],
+        attempted_paths: List[str]
+    ) -> Any:
+        """Try loading by searching for session_id across all users."""
+        try:
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                # Search for sessions with matching session_id
+                cursor.execute("""
+                    SELECT user_id, id FROM sessions 
+                    WHERE id = ? AND app_name = ?
+                    ORDER BY update_time DESC 
+                    LIMIT 1
+                """, (session_id, app_name))
+                
+                result = cursor.fetchone()
+                if result:
+                    actual_user_id, actual_session_id = result
+                    logger.info(f"Trying pattern 4 with found user={actual_user_id}, session={actual_session_id}")
+                    
+                    if version is not None:
+                        artifact = await gcs_service.load_artifact(
+                            app_name=app_name,
+                            user_id=actual_user_id,
+                            session_id=actual_session_id,
+                            filename=artifact_name,
+                            version=version
+                        )
+                    else:
+                        artifact = await gcs_service.load_artifact(
+                            app_name=app_name,
+                            user_id=actual_user_id,
+                            session_id=actual_session_id,
+                            filename=artifact_name
+                        )
+                    
+                    attempted_paths.append(f"{app_name}/{actual_user_id}/{actual_session_id}/{artifact_name}")
+                    if artifact:
+                        logger.info(f"Found artifact with pattern 4 (user={actual_user_id}, session={actual_session_id})")
+                        return artifact
+                        
+        except Exception as e:
+            logger.warning(f"Pattern 4 failed: {e}")
+        
+        return None
+    
     def extract_file_data_and_mime_type(self, artifact, artifact_name: str) -> Tuple[bytes, str]:
         """Extract file data and determine MIME type from artifact."""
         file_data = None
@@ -272,7 +330,7 @@ class ArtifactService:
             HTTPException: If artifact not found or processing fails
         """
         try:
-            logger.info(f"Download request: app={app_name}, user={user_id}, session={session_id}, file={artifact_name}, version={version}")
+            logger.info(f"Download request: app={app_name}, user={user_id} (len={len(user_id)}), session={session_id}, file={artifact_name}, version={version}")
             
             # Try to load artifact with fallback patterns
             artifact, attempted_paths = await self.load_artifact_with_fallback(

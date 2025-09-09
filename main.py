@@ -11,7 +11,6 @@ from fastapi.staticfiles import StaticFiles
 from middleware import auth_middleware
 from typing import Optional
 import logging
-import io
 
 # Import new configuration and utilities
 from config import AppConfig, LogConfig
@@ -246,22 +245,7 @@ async def options_handler():
     return {"message": "OK"}
 
 # ADKユーザーID確認用エンドポイント
-@app.get("/auth/adk-user-id")
-async def get_adk_user_id_status(request: Request):
-    """現在のADKユーザーIDステータスを確認"""
-    try:
-        adk_user_id = get_current_adk_user_id(request)
-        user_email = get_current_user_id(request)
-        
-        return {
-            "adk_user_id": adk_user_id,
-            "user_email": user_email,
-            "authenticated": adk_user_id != "anonymous",
-            "stable_id_generated": len(adk_user_id) == 16 and adk_user_id != "anonymous"
-        }
-    except Exception as e:
-        logger.error(f"Failed to get ADK user ID status: {e}")
-        return {"error": str(e)}
+# ADK User ID endpoint moved to auth_routes.py
 
 # Google OAuth2.0コールバックエンドポイント
 @app.get("/auth/callback")
@@ -350,28 +334,7 @@ async def oauth_callback(request: Request, code: Optional[str] = None, error: Op
     except Exception as e:
         return handle_auth_error(e, "OAuth callback processing", include_traceback=True)
 
-# Google OAuth2.0認証ステータス確認エンドポイント
-@app.get("/auth/status")
-async def auth_status(request: Request):
-    """現在の認証ステータスを確認（セッションベース）"""
-    try:
-        import sys
-        sys.path.append(os.path.dirname(__file__))
-        from auth.session_auth import get_session_auth_manager
-        
-        session_manager = get_session_auth_manager()
-        user_info = session_manager.get_user_info(request)
-        
-        if user_info:
-            return {
-                "authenticated": True,
-                "user": user_info
-            }
-        
-        return {"authenticated": False}
-        
-    except Exception as e:
-        return handle_auth_error(e, "auth status check")
+# Auth status endpoint moved to auth_routes.py
 
 # Google OAuth2.0ログアウトエンドポイント
 @app.post("/auth/logout")
@@ -1372,6 +1335,10 @@ async def download_artifact_by_invocation(
 # Include debug routes if debug mode is enabled
 from debug_routes import include_debug_routes
 app = include_debug_routes(app)
+
+# Include authentication routes
+from auth_routes import include_auth_routes
+app = include_auth_routes(app)
 
 if __name__ == "__main__":
     logger.info("Starting application...")
