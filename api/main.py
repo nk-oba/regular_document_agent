@@ -29,8 +29,8 @@ background_task = None
 
 async def session_cleanup_task():
     """セッションクリーンアップのバックグラウンドタスク"""
-    from auth.session_auth import get_session_auth_manager
-    from auth.session_sync_manager import get_session_sync_manager
+    from shared.auth.session_auth import get_session_auth_manager
+    from shared.auth.session_sync_manager import get_session_sync_manager
     
     while True:
         try:
@@ -167,7 +167,7 @@ def get_current_user_id(request: Request = None) -> Optional[str]:
         
         # リクエストがある場合はセッションベース認証を優先
         if request is not None:
-            from auth.session_auth import get_session_auth_manager
+            from shared.auth.session_auth import get_session_auth_manager
             
             session_manager = get_session_auth_manager()
             user_info = session_manager.get_user_info(request)
@@ -176,7 +176,7 @@ def get_current_user_id(request: Request = None) -> Optional[str]:
                 return user_info.get("email", user_info.get("id"))
         
         # フォールバックとしてMCP認証を使用
-        from auth.google_auth import get_auth_manager
+        from shared.auth.google_auth import get_auth_manager
         
         auth_manager = get_auth_manager()
         is_authenticated, user_info = auth_manager.check_auth_status()
@@ -205,7 +205,7 @@ def get_current_adk_user_id(request: Request = None) -> str:
             return "anonymous"
         
         # セッション情報から直接ユーザー情報を取得（最も確実な方法）
-        from auth.session_auth import get_session_auth_manager
+        from shared.auth.session_auth import get_session_auth_manager
         
         session_manager = get_session_auth_manager()
         user_info = session_manager.get_user_info(request)
@@ -255,8 +255,8 @@ async def oauth_callback(code: Optional[str] = None, error: Optional[str] = None
         # 認証コードをauth moduleに渡して処理
         import sys
         sys.path.append(os.path.dirname(__file__))
-        from auth.google_auth import get_auth_manager
-        from auth.session_auth import get_session_auth_manager
+        from shared.auth.google_auth import get_auth_manager
+        from shared.auth.session_auth import get_session_auth_manager
         
         # 一時的な認証マネージャーを使用してトークンを取得
         temp_auth_manager = get_auth_manager()
@@ -279,7 +279,7 @@ async def oauth_callback(code: Optional[str] = None, error: Optional[str] = None
                 if USE_UNIFIED_SESSION_MANAGEMENT:
                     # 統合セッション管理を使用（フォールバック付き）
                     try:
-                        from auth.unified_session_manager import get_unified_session_manager
+                        from shared.auth.unified_session_manager import get_unified_session_manager
                         unified_manager = get_unified_session_manager()
                         unified_session = unified_manager.create_unified_session(user_data, credentials)
                         session_id = unified_session["login_session_id"]
@@ -288,12 +288,12 @@ async def oauth_callback(code: Optional[str] = None, error: Optional[str] = None
                     except Exception as e:
                         logger.warning(f"Unified session failed, using sync manager: {e}")
                         # フォールバック: 従来のセッション同期管理
-                        from auth.session_sync_manager import get_session_sync_manager
+                        from shared.auth.session_sync_manager import get_session_sync_manager
                         sync_manager = get_session_sync_manager()
                         session_id, adk_user_id = sync_manager.on_login(user_data, credentials)
                 else:
                     # 従来のセッション同期管理を使用
-                    from auth.session_sync_manager import get_session_sync_manager
+                    from shared.auth.session_sync_manager import get_session_sync_manager
                     sync_manager = get_session_sync_manager()
                     session_id, adk_user_id = sync_manager.on_login(user_data, credentials)
                     logger.info(f"Using sync session management")
@@ -333,8 +333,8 @@ async def oauth_callback(code: Optional[str] = None, error: Optional[str] = None
 async def logout(request: Request, response: Response):
     """認証情報をクリア（セッションベース）"""
     try:
-        from auth.session_auth import get_session_auth_manager
-        from auth.session_sync_manager import get_session_sync_manager
+        from shared.auth.session_auth import get_session_auth_manager
+        from shared.auth.session_sync_manager import get_session_sync_manager
         
         session_manager = get_session_auth_manager()
         sync_manager = get_session_sync_manager()
@@ -350,7 +350,7 @@ async def logout(request: Request, response: Response):
             # 1. 統合セッション管理での削除を試行
             unified_logout_success = False
             try:
-                from auth.unified_session_manager import get_unified_session_manager
+                from shared.auth.unified_session_manager import get_unified_session_manager
                 unified_manager = get_unified_session_manager()
                 
                 if unified_manager.delete_unified_session(request):
@@ -389,60 +389,14 @@ async def logout(request: Request, response: Response):
         logger.error(f"Logout error: {e}")
         # エラーが発生してもクッキーはクリアする
         try:
-            from auth.session_auth import get_session_auth_manager
+            from shared.auth.session_auth import get_session_auth_manager
             session_manager = get_session_auth_manager()
             session_manager.clear_session_cookie(response)
         except:
             pass
         return {"success": False, "error": str(e)}
 
-# Google OAuth2.0認証開始エンドポイント
-@app.get("/auth/start")
-async def start_oauth(request: Request):
-    """Google OAuth2.0認証を開始（セッションベース）"""
-    try:
-        import sys
-        sys.path.append(os.path.dirname(__file__))
-        from auth.google_auth import get_auth_manager
-        from auth.session_auth import get_session_auth_manager
-        
-        # セッションベースの認証状態をチェック
-        session_manager = get_session_auth_manager()
-        user_info = session_manager.get_user_info(request)
-        
-        if user_info:
-            return {
-                "success": True,
-                "message": "Already authenticated",
-                "authenticated": True
-            }
-        
-        # 認証URLを生成（認証フロー開始）
-        auth_manager = get_auth_manager()
-        if not auth_manager.client_secrets_file or not os.path.exists(auth_manager.client_secrets_file):
-            return {"error": "OAuth client secrets not configured"}
-        
-        from google_auth_oauthlib.flow import Flow
-        
-        flow = Flow.from_client_secrets_file(
-            auth_manager.client_secrets_file,
-            scopes=auth_manager.scopes
-        )
-        flow.redirect_uri = AppConfig.GOOGLE_OAUTH_REDIRECT_URI
-        
-        auth_url, _ = flow.authorization_url(
-            prompt='consent',
-            access_type='offline',
-            include_granted_scopes='true'
-        )
-        
-        return create_success_response(
-            "Please visit the auth_url to complete authentication",
-            auth_url=auth_url
-        )
-        
-    except Exception as e:
-        return handle_auth_error(e, "OAuth start")
+# OAuth start endpoint moved to auth_routes.py
 
 # MCP ADA認証ステータス確認エンドポイント
 @app.get("/auth/mcp-ada/status")
@@ -451,7 +405,7 @@ async def mcp_ada_auth_status():
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
-        from auth.mcp_ada_auth import get_mcp_ada_auth_manager
+        from shared.auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
         # MCP用のユーザーIDを取得（ユーザー共通）
         user_id = get_current_user_id_for_mcp()
@@ -484,7 +438,7 @@ async def start_mcp_ada_oauth():
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
-        from auth.mcp_ada_auth import get_mcp_ada_auth_manager
+        from shared.auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
         # MCP用のユーザーIDを取得（ユーザー共通）
         user_id = get_current_user_id_for_mcp()
@@ -550,7 +504,7 @@ async def mcp_ada_callback(request: dict):
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
-        from auth.mcp_ada_auth import get_mcp_ada_auth_manager
+        from shared.auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
         # MCP用のユーザーIDを取得（ユーザー共通）
         user_id = get_current_user_id_for_mcp()
@@ -602,7 +556,7 @@ async def mcp_ada_logout():
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
-        from auth.mcp_ada_auth import get_mcp_ada_auth_manager
+        from shared.auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
         # MCP用のユーザーIDを取得（ユーザー共通）
         user_id = get_current_user_id_for_mcp()
@@ -628,7 +582,7 @@ async def mcp_ada_logout():
 async def get_session_stats(request: Request):
     """統合セッション統計情報を取得"""
     try:
-        from auth.session_sync_manager import get_session_sync_manager
+        from shared.auth.session_sync_manager import get_session_sync_manager
         
         sync_manager = get_session_sync_manager()
         adk_user_id = get_current_adk_user_id(request)
@@ -643,7 +597,7 @@ async def get_session_stats(request: Request):
 async def cleanup_orphaned_sessions():
     """孤立したADKセッション（対応するログインセッションがない）をクリーンアップ"""
     try:
-        from auth.session_sync_manager import get_session_sync_manager
+        from shared.auth.session_sync_manager import get_session_sync_manager
         
         sync_manager = get_session_sync_manager()
         deleted_count = sync_manager.cleanup_orphaned_adk_sessions()
@@ -715,7 +669,7 @@ async def get_adk_session_stats(request: Request):
 async def get_unified_session(request: Request):
     """現在の統合セッション情報を取得"""
     try:
-        from auth.unified_session_manager import get_unified_session_manager
+        from shared.auth.unified_session_manager import get_unified_session_manager
         
         unified_manager = get_unified_session_manager()
         session_info = unified_manager.get_unified_session_info(request)
@@ -736,7 +690,7 @@ async def get_unified_session(request: Request):
 async def get_adk_sessions_details(adk_user_id: str):
     """指定ユーザーのADKセッション詳細を取得"""
     try:
-        from auth.unified_session_manager import get_unified_session_manager
+        from shared.auth.unified_session_manager import get_unified_session_manager
         
         unified_manager = get_unified_session_manager()
         sessions = unified_manager.get_adk_session_details(adk_user_id)
@@ -755,7 +709,7 @@ async def get_adk_sessions_details(adk_user_id: str):
 async def get_current_user_chats(request: Request):
     """現在のユーザーのチャット一覧を取得"""
     try:
-        from auth.unified_session_manager import get_unified_session_manager
+        from shared.auth.unified_session_manager import get_unified_session_manager
         
         # 現在のユーザーのADKユーザーIDを取得
         adk_user_id = get_current_adk_user_id(request)
@@ -781,7 +735,7 @@ async def get_current_user_chats_with_history(request: Request, include_archived
     """現在のユーザーのチャット一覧を履歴情報と共に取得"""
     try:
         import sqlite3
-        from auth.unified_session_manager import get_unified_session_manager
+        from shared.auth.unified_session_manager import get_unified_session_manager
         
         # 現在のユーザーのADKユーザーIDを取得
         adk_user_id = get_current_adk_user_id(request)
@@ -912,10 +866,10 @@ async def delete_chat_session(session_id: str, request: Request):
 async def verify_user_id_consistency(request: Request):
     """ユーザーID生成の一貫性を検証"""
     try:
-        from auth.session_auth import get_session_auth_manager
-        from auth.unified_session_manager import get_unified_session_manager
-        from auth.session_sync_manager import get_session_sync_manager
-        from middleware import get_user_id_for_adk
+        from shared.auth.session_auth import get_session_auth_manager
+        from shared.auth.unified_session_manager import get_unified_session_manager
+        from shared.auth.session_sync_manager import get_session_sync_manager
+        from shared.core.middleware import get_user_id_for_adk
         import hashlib
         
         # セッション情報を取得
@@ -983,7 +937,7 @@ async def verify_user_id_consistency(request: Request):
 async def force_create_adk_session(request: Request, app_name: str = "document_creating_agent"):
     """ADKセッションを強制作成（管理・テスト用）"""
     try:
-        from auth.unified_session_manager import get_unified_session_manager
+        from shared.auth.unified_session_manager import get_unified_session_manager
         
         unified_manager = get_unified_session_manager()
         session_info = unified_manager.get_unified_session_info(request)
@@ -1012,7 +966,7 @@ async def force_create_adk_session(request: Request, app_name: str = "document_c
 async def get_unified_stats():
     """統合セッション統計を取得"""
     try:
-        from auth.unified_session_manager import get_unified_session_manager
+        from shared.auth.unified_session_manager import get_unified_session_manager
         
         unified_manager = get_unified_session_manager()
         return unified_manager.get_unified_stats()
@@ -1026,7 +980,7 @@ async def get_unified_stats():
 async def get_archived_chat_history(request: Request, limit: int = 50):
     """現在のユーザーのアーカイブされたチャット履歴を取得"""
     try:
-        from auth.session_sync_manager import get_session_sync_manager
+        from shared.auth.session_sync_manager import get_session_sync_manager
         
         adk_user_id = get_current_adk_user_id(request)
         if adk_user_id == "anonymous":
@@ -1049,7 +1003,7 @@ async def get_archived_chat_history(request: Request, limit: int = 50):
 async def get_archived_chat_stats():
     """アーカイブチャット統計情報を取得"""
     try:
-        from auth.session_sync_manager import get_session_sync_manager
+        from shared.auth.session_sync_manager import get_session_sync_manager
         
         sync_manager = get_session_sync_manager()
         return sync_manager.get_archived_chat_stats()
@@ -1062,7 +1016,7 @@ async def get_archived_chat_stats():
 async def cleanup_old_archived_chats(days_to_keep: int = 90):
     """古いアーカイブチャットをクリーンアップ"""
     try:
-        from auth.session_sync_manager import get_session_sync_manager
+        from shared.auth.session_sync_manager import get_session_sync_manager
         
         sync_manager = get_session_sync_manager()
         deleted_count = sync_manager.cleanup_old_archived_chats(days_to_keep)
@@ -1087,7 +1041,7 @@ async def download_artifact_stream(
     version: Optional[int] = None
 ):
     """任意のArtifactをストリーミング形式でダウンロード"""
-    from artifact_service import ArtifactService
+    from shared.services.artifact_service import ArtifactService
     
     service = ArtifactService()
     return await service.download_artifact(app_name, user_id, session_id, artifact_name, version)
@@ -1099,7 +1053,7 @@ async def download_artifact_by_invocation(
     version: Optional[int] = None
 ):
     """invocationIdを使用してArtifactをダウンロード"""
-    from artifact_service import InvocationArtifactService
+    from shared.services.artifact_service import InvocationArtifactService
     
     service = InvocationArtifactService()
     return await service.download_artifact_by_invocation(invocation_id, artifact_name, version)

@@ -143,12 +143,32 @@ async def logout(request: Request, response: Response):
         return handle_auth_error(e, "logout")
 
 @auth_router.get("/start")
-async def start_oauth():
+async def start_oauth(request: Request):
     """Google OAuth認証を開始"""
     try:
+        logger.info("OAuth start endpoint called")
+        
+        # セッションベースの認証状態をチェック
+        session_manager = get_session_auth_manager()
+        user_info = session_manager.get_user_info(request)
+        
+        if user_info:
+            logger.info(f"User already authenticated: {user_info.get('email', 'unknown')}")
+            return {
+                "success": True,
+                "message": "Already authenticated",
+                "authenticated": True
+            }
+        
+        logger.info("Starting new OAuth flow")
+        
         from google_auth_oauthlib.flow import Flow
         
         auth_manager = get_auth_manager()
+        if not auth_manager.client_secrets_file:
+            logger.error("OAuth client secrets not configured")
+            return {"success": False, "error": "OAuth client secrets not configured"}
+        
         flow = Flow.from_client_secrets_file(
             auth_manager.client_secrets_file,
             scopes=auth_manager.scopes
@@ -161,12 +181,15 @@ async def start_oauth():
             include_granted_scopes='true'
         )
         
+        logger.info(f"Generated OAuth URL: {auth_url[:100]}...")
+        
         return create_success_response(
             "Please visit the auth_url to complete authentication",
             auth_url=auth_url
         )
         
     except Exception as e:
+        logger.error(f"OAuth start error: {e}")
         return handle_auth_error(e, "OAuth start")
 
 # MCP ADA Authentication Endpoints
