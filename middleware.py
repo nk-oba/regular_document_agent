@@ -88,6 +88,7 @@ async def auth_middleware(request: Request, call_next):
         "/auth/mcp-ada/callback",
         "/auth/debug/",  # デバッグエンドポイント
         "/auth/verify/",  # 検証エンドポイント
+        "/download/artifact/",  # 汎用Artifactストリーミングダウンロード
         "/static",
         "/docs",
         "/redoc",

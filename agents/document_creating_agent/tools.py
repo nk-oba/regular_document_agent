@@ -29,15 +29,16 @@ def get_tools():
     """MCPツールを安全に読み込み（遅延初期化）"""
     tools = []
     
-    # CSV生成ツールを追加
+    # Artifact生成ツールを追加
     tools.extend([
         generate_sample_csv_report,
-        generate_monthly_performance_csv
+        generate_monthly_performance_csv,
+        generate_sample_report_artifact
     ])
     
     # MCPツールの初期化をスキップしてサーバー起動を優先
     logging.info("MCP tools will be initialized on first use (lazy loading)")
-    logging.info(f"Added {len(tools)} CSV generation tools")
+    logging.info(f"Added {len(tools)} artifact generation tools")
     
     # 注意：実際のMCPツールの初期化は get_mcp_ada_tool_lazy() などで行う
     return tools
@@ -135,29 +136,46 @@ async def generate_sample_csv_report(tool_context):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"advertising_campaign_report_{timestamp}.csv"
         
-        # Artifactを保存
-        version = await tool_context.save_artifact(
+        # 新しいヘルパー関数を使用してArtifactを保存
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        from utils.artifact_user_helper import save_artifact_with_proper_user_id, format_download_section
+        
+        # Artifactを適切なユーザー管理で保存
+        save_result = await save_artifact_with_proper_user_id(
+            tool_context=tool_context,
             filename=filename,
-            artifact=csv_artifact
+            artifact=csv_artifact,
+            return_detailed_info=True
         )
         
-        logging.info(f"CSV report generated successfully: {filename} (version {version})")
+        if save_result['success']:
+            logging.info(f"CSV report generated successfully: {filename} (version {save_result['version']})")
+            # フォーマット済みダウンロードセクションを取得
+            download_section = format_download_section(save_result)
+            version = save_result['version']
+        else:
+            logging.error(f"Failed to save CSV artifact: {save_result.get('error')}")
+            download_section = f"❌ ファイル保存エラー: {save_result.get('error', 'Unknown error')}"
+            version = 0
         
-        return f"""CSVレポートが正常に生成されました！
+        return f"""✅ CSVレポートが正常に生成されました！
 
-📄 ファイル名: {filename}
-📊 データ: 5件のサンプル広告キャンペーンデータ
-🔢 バージョン: {version}
+📄 **ファイル名**: `{filename}`
+📊 **データ**: 5件のサンプル広告キャンペーンデータ
+🔢 **バージョン**: {version}
+🕐 **生成日時**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-ダウンロード方法:
-1. チャットインターフェースでダウンロードボタンをクリック
-2. または 'load_artifact' ツールを使用してプログラム的にアクセス
+{download_section}
 
-含まれるデータ:
-- キャンペーンID、名前
+📊 **含まれるデータ**:
+- キャンペーンID、キャンペーン名
 - インプレッション数、クリック数
-- CTR、コスト、CPC
-- 実行日付
+- CTR（クリック率）、広告費用
+- CPC（クリック単価）、実行日付
+
+💡 このファイルはExcelで直接開いて分析可能です！
 """
         
     except Exception as e:
@@ -233,31 +251,231 @@ async def generate_monthly_performance_csv(tool_context, year: Optional[int] = N
         # ファイル名
         filename = f"monthly_performance_{year:04d}{month:02d}.csv"
         
-        # Artifactを保存
-        version = await tool_context.save_artifact(
+        # 新しいヘルパー関数を使用してArtifactを保存
+        from utils.artifact_user_helper import save_artifact_with_proper_user_id, format_download_section
+        
+        # Artifactを適切なユーザー管理で保存
+        save_result = await save_artifact_with_proper_user_id(
+            tool_context=tool_context,
             filename=filename,
-            artifact=csv_artifact
+            artifact=csv_artifact,
+            return_detailed_info=True
         )
         
-        logging.info(f"Monthly performance CSV generated: {filename} (version {version})")
+        if save_result['success']:
+            logging.info(f"Monthly performance CSV generated: {filename} (version {save_result['version']})")
+            # フォーマット済みダウンロードセクションを取得
+            download_section = format_download_section(save_result)
+            version = save_result['version']
+        else:
+            logging.error(f"Failed to save monthly CSV artifact: {save_result.get('error')}")
+            download_section = f"❌ ファイル保存エラー: {save_result.get('error', 'Unknown error')}"
+            version = 0
         
-        return f"""月次パフォーマンスレポートが生成されました！
+        return f"""✅ 月次パフォーマンスレポートが生成されました！
 
-📅 対象期間: {year}年{month}月
-📄 ファイル名: {filename} 
-📊 データ件数: {len(data)-1}件 (ヘッダー除く)
-🔢 バージョン: {version}
+📅 **対象期間**: {year}年{month}月
+📄 **ファイル名**: `{filename}`
+📊 **データ件数**: {len(data)-1}件（ヘッダー除く）
+🔢 **バージョン**: {version}
+🕐 **生成日時**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-レポート内容:
-- 日別キャンペーンパフォーマンス
-- デバイス別分析
-- コンバージョン・CPA追跡
-- 主要指標の詳細データ
+{download_section}
 
-このファイルはExcelで開くか、データ分析ツールでご利用いただけます。
+📈 **レポート内容**:
+- 📊 日別キャンペーンパフォーマンス
+- 📱 デバイス別分析（Desktop/Mobile/Tablet）
+- 🎯 コンバージョン・CPA追跡
+- 📋 主要指標の詳細データ
+
+💼 **活用方法**:
+- Excelでピボットテーブル分析
+- Google Sheetsでグラフ作成
+- BIツール（Tableau、Power BI）でダッシュボード構築
+- Python/Rでの統計分析
+
+🔍 月次トレンド分析やROI最適化にご活用ください！
 """
         
     except Exception as e:
         error_msg = f"月次レポート生成中にエラーが発生しました: {str(e)}"
+        logging.error(error_msg)
+        return error_msg
+
+
+async def generate_sample_report_artifact(tool_context, format_type: str = "json"):
+    """
+    サンプルレポートを任意の形式で生成（汎用Artifactデモ）
+    
+    Args:
+        tool_context: ADK tool context
+        format_type: 生成するファイル形式 ("json", "txt", "html")
+        
+    Returns:
+        str: 生成されたファイルの情報
+    """
+    try:
+        # サンプルデータ
+        report_data = {
+            "report_title": "広告キャンペーン分析レポート",
+            "generated_at": datetime.now().isoformat(),
+            "summary": {
+                "total_campaigns": 5,
+                "total_impressions": 750000,
+                "total_clicks": 18500,
+                "average_ctr": 2.47,
+                "total_cost": 275000
+            },
+            "campaigns": [
+                {"name": "夏セールキャンペーン", "impressions": 125000, "clicks": 3200, "cost": 48000},
+                {"name": "新商品発売記念", "impressions": 89500, "clicks": 2150, "cost": 32250},
+                {"name": "バックトゥスクール", "impressions": 156300, "clicks": 4890, "cost": 73350},
+                {"name": "週末限定セール", "impressions": 203100, "clicks": 6093, "cost": 91395},
+                {"name": "アウトレットクリアランス", "impressions": 78900, "clicks": 1578, "cost": 23670}
+            ]
+        }
+        
+        # 形式に応じてデータを変換
+        if format_type.lower() == "json":
+            import json
+            file_data = json.dumps(report_data, ensure_ascii=False, indent=2).encode('utf-8')
+            filename = f"campaign_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            mime_type = "application/json"
+            
+        elif format_type.lower() == "txt":
+            text_content = f"""広告キャンペーン分析レポート
+生成日時: {report_data['generated_at']}
+
+サマリー:
+- 総キャンペーン数: {report_data['summary']['total_campaigns']}
+- 総インプレッション数: {report_data['summary']['total_impressions']:,}
+- 総クリック数: {report_data['summary']['total_clicks']:,}
+- 平均CTR: {report_data['summary']['average_ctr']}%
+- 総コスト: {report_data['summary']['total_cost']:,}円
+
+キャンペーン詳細:
+"""
+            for campaign in report_data['campaigns']:
+                text_content += f"- {campaign['name']}: {campaign['impressions']:,}imp, {campaign['clicks']:,}click, {campaign['cost']:,}円\n"
+            
+            file_data = text_content.encode('utf-8')
+            filename = f"campaign_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            mime_type = "text/plain"
+            
+        elif format_type.lower() == "html":
+            html_content = f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>広告キャンペーン分析レポート</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        .summary {{ background-color: #f0f8ff; padding: 15px; border-radius: 5px; margin: 20px 0; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+        th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
+        th {{ background-color: #4CAF50; color: white; }}
+        tr:nth-child(even) {{ background-color: #f2f2f2; }}
+    </style>
+</head>
+<body>
+    <h1>広告キャンペーン分析レポート</h1>
+    <p><strong>生成日時:</strong> {report_data['generated_at']}</p>
+    
+    <div class="summary">
+        <h2>サマリー</h2>
+        <ul>
+            <li>総キャンペーン数: {report_data['summary']['total_campaigns']}</li>
+            <li>総インプレッション数: {report_data['summary']['total_impressions']:,}</li>
+            <li>総クリック数: {report_data['summary']['total_clicks']:,}</li>
+            <li>平均CTR: {report_data['summary']['average_ctr']}%</li>
+            <li>総コスト: {report_data['summary']['total_cost']:,}円</li>
+        </ul>
+    </div>
+    
+    <h2>キャンペーン詳細</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>キャンペーン名</th>
+                <th>インプレッション数</th>
+                <th>クリック数</th>
+                <th>コスト</th>
+            </tr>
+        </thead>
+        <tbody>"""
+            for campaign in report_data['campaigns']:
+                html_content += f"""
+            <tr>
+                <td>{campaign['name']}</td>
+                <td>{campaign['impressions']:,}</td>
+                <td>{campaign['clicks']:,}</td>
+                <td>{campaign['cost']:,}円</td>
+            </tr>"""
+            
+            html_content += """
+        </tbody>
+    </table>
+</body>
+</html>"""
+            file_data = html_content.encode('utf-8')
+            filename = f"campaign_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+            mime_type = "text/html"
+            
+        else:
+            return f"❌ サポートされていないファイル形式: {format_type}\nサポート形式: json, txt, html"
+        
+        # ADK Artifactとして作成
+        artifact = types.Part.from_bytes(
+            data=file_data,
+            mime_type=mime_type
+        )
+        
+        # 新しいヘルパー関数を使用してArtifactを保存
+        from utils.artifact_user_helper import save_artifact_with_proper_user_id, format_download_section
+        
+        # Artifactを適切なユーザー管理で保存
+        save_result = await save_artifact_with_proper_user_id(
+            tool_context=tool_context,
+            filename=filename,
+            artifact=artifact,
+            return_detailed_info=True
+        )
+        
+        if save_result['success']:
+            logging.info(f"Generic artifact generated: {filename} (version {save_result['version']}, format: {format_type})")
+            # フォーマット済みダウンロードセクションを取得
+            download_section = format_download_section(save_result)
+            version = save_result['version']
+        else:
+            logging.error(f"Failed to save generic artifact: {save_result.get('error')}")
+            download_section = f"❌ ファイル保存エラー: {save_result.get('error', 'Unknown error')}"
+            version = 0
+        
+        return f"""✅ {format_type.upper()}形式のレポートが生成されました！
+
+📄 **ファイル名**: `{filename}`
+📊 **形式**: {format_type.upper()}
+🔢 **バージョン**: {version}
+📦 **MIMEタイプ**: {mime_type}
+🕐 **生成日時**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+{download_section}
+
+📈 **レポート内容**:
+- 📊 キャンペーン分析データ
+- 📋 サマリー統計情報
+- 🎯 個別キャンペーン詳細
+
+💼 **活用方法**:
+- {format_type.upper()}ファイルとして保存・共有
+- 他のツールで後処理
+- アーカイブとして保管
+
+🔧 この機能は汎用Artifactダウンロード機能のデモンストレーションです！
+"""
+        
+    except Exception as e:
+        error_msg = f"{format_type}レポート生成中にエラーが発生しました: {str(e)}"
         logging.error(error_msg)
         return error_msg

@@ -7,11 +7,12 @@ from google.adk.cli.fast_api import get_fast_api_app
 import uvicorn
 from fastapi import FastAPI, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import RedirectResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from middleware import auth_middleware
 from typing import Optional
 import logging
+import io
 
 # ログ設定
 logging.basicConfig(level=logging.INFO)
@@ -1108,6 +1109,80 @@ async def debug_sessions_comparison(request: Request):
         import traceback
         return {"error": str(e), "traceback": traceback.format_exc()}
 
+@app.get("/auth/debug/artifact-paths")
+async def debug_artifact_paths(request: Request):
+    """Artifact保存パスのデバッグ情報を取得"""
+    try:
+        import sqlite3
+        
+        # セッションデータベースから現在の情報を取得
+        conn = sqlite3.connect(SESSION_DB_URL.replace('sqlite:///', ''))
+        cursor = conn.cursor()
+        
+        # 最新のセッション情報を取得
+        cursor.execute("""
+            SELECT id, user_id, app_name, create_time, update_time 
+            FROM sessions 
+            WHERE app_name = 'document_creating_agent'
+            ORDER BY update_time DESC 
+            LIMIT 10
+        """)
+        
+        recent_sessions = []
+        for row in cursor.fetchall():
+            session_id, user_id, app_name, create_time, update_time = row
+            recent_sessions.append({
+                "session_id": session_id,
+                "user_id": user_id,
+                "app_name": app_name,
+                "create_time": create_time,
+                "update_time": update_time
+            })
+        
+        conn.close()
+        
+        # GCS情報の取得を試行
+        gcs_info = {
+            "bucket_name": ARTIFACT_URL.replace("gs://", ""),
+            "artifact_service_uri": ARTIFACT_URL
+        }
+        
+        # 現在のログイン情報
+        from auth.session_auth import get_session_auth_manager
+        session_manager = get_session_auth_manager()
+        user_info = session_manager.get_user_info(request)
+        
+        current_user_info = None
+        if user_info:
+            email = user_info.get("email")
+            if email:
+                import hashlib
+                normalized_email = email.strip().lower()
+                hash_object = hashlib.sha256(normalized_email.encode('utf-8'))
+                adk_user_id = hash_object.hexdigest()[:16]
+                
+                current_user_info = {
+                    "email": email,
+                    "adk_user_id": adk_user_id,
+                    "login_session_id": session_manager.get_session_id_from_request(request)
+                }
+        
+        return {
+            "current_user": current_user_info,
+            "recent_sessions": recent_sessions,
+            "gcs_info": gcs_info,
+            "expected_artifact_paths": [
+                f"{gcs_info['bucket_name']}/document_creating_agent/{session['user_id']}/{session['session_id']}/[filename]"
+                for session in recent_sessions[:3]
+            ],
+            "debug_note": "実際のArtifact保存時には、ADKが内部的にユーザーIDとセッションIDを決定します"
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get artifact debug info: {e}")
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
 @app.get("/auth/verify/consistency")
 async def verify_user_id_consistency(request: Request):
     """ユーザーID生成の一貫性を検証"""
@@ -1277,6 +1352,484 @@ async def cleanup_old_archived_chats(days_to_keep: int = 90):
     except Exception as e:
         logger.error(f"Failed to cleanup old archived chats: {e}")
         return {"success": False, "error": str(e)}
+
+@app.get("/download/artifact/{app_name}/{user_id}/{session_id}/{artifact_name}")
+async def download_artifact_stream(
+    app_name: str,
+    user_id: str, 
+    session_id: str,
+    artifact_name: str,
+    version: Optional[int] = None
+):
+    """任意のArtifactをストリーミング形式でダウンロード"""
+    try:
+        logger.info(f"Download request: app={app_name}, user={user_id}, session={session_id}, file={artifact_name}, version={version}")
+        
+        # GCS Artifact Service を直接使用
+        from google.adk.artifacts import GcsArtifactService
+        
+        # GCSバケット名を設定から取得
+        gcs_bucket_name = ARTIFACT_URL.replace("gs://", "")  # "gs://dev-datap-agent-bucket" -> "dev-datap-agent-bucket"
+        logger.info(f"Using GCS bucket: {gcs_bucket_name}")
+        
+        try:
+            # GCS Artifact Service の初期化
+            gcs_service = GcsArtifactService(bucket_name=gcs_bucket_name)
+            
+            # 複数のパターンでArtifactの読み込みを試行
+            artifact = None
+            attempted_paths = []
+            
+            # パターン1: 指定されたパラメータをそのまま使用
+            try:
+                logger.info(f"Trying pattern 1: app={app_name}, user={user_id}, session={session_id}")
+                if version is not None:
+                    artifact = await gcs_service.load_artifact(
+                        app_name=app_name,
+                        user_id=user_id,
+                        session_id=session_id,
+                        filename=artifact_name,
+                        version=version
+                    )
+                else:
+                    artifact = await gcs_service.load_artifact(
+                        app_name=app_name,
+                        user_id=user_id,
+                        session_id=session_id,
+                        filename=artifact_name
+                    )
+                attempted_paths.append(f"{app_name}/{user_id}/{session_id}/{artifact_name}")
+                if artifact:
+                    logger.info("Found artifact with pattern 1")
+            except Exception as e1:
+                logger.warning(f"Pattern 1 failed: {e1}")
+            
+            # パターン2: session_idが問題の場合、最近のセッションで試行
+            if not artifact and session_id == "unknown":
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(SESSION_DB_URL.replace('sqlite:///', ''))
+                    cursor = conn.cursor()
+                    
+                    # 該当user_idの最新セッションを取得
+                    cursor.execute("""
+                        SELECT id FROM sessions 
+                        WHERE user_id = ? AND app_name = ?
+                        ORDER BY update_time DESC 
+                        LIMIT 1
+                    """, (user_id, app_name))
+                    
+                    result = cursor.fetchone()
+                    if result:
+                        actual_session_id = result[0]
+                        logger.info(f"Trying pattern 2 with actual session: {actual_session_id}")
+                        
+                        if version is not None:
+                            artifact = await gcs_service.load_artifact(
+                                app_name=app_name,
+                                user_id=user_id,
+                                session_id=actual_session_id,
+                                filename=artifact_name,
+                                version=version
+                            )
+                        else:
+                            artifact = await gcs_service.load_artifact(
+                                app_name=app_name,
+                                user_id=user_id,
+                                session_id=actual_session_id,
+                                filename=artifact_name
+                            )
+                        attempted_paths.append(f"{app_name}/{user_id}/{actual_session_id}/{artifact_name}")
+                        if artifact:
+                            logger.info(f"Found artifact with pattern 2 (actual session: {actual_session_id})")
+                    
+                    conn.close()
+                except Exception as e2:
+                    logger.warning(f"Pattern 2 failed: {e2}")
+            
+            # パターン3: user_idが問題の場合、emailからの変換を試行
+            if not artifact and user_id == "test":
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(SESSION_DB_URL.replace('sqlite:///', ''))
+                    cursor = conn.cursor()
+                    
+                    # 最近のアクティブユーザーを取得
+                    cursor.execute("""
+                        SELECT user_id, id FROM sessions 
+                        WHERE app_name = ?
+                        ORDER BY update_time DESC 
+                        LIMIT 5
+                    """)
+                    
+                    results = cursor.fetchall()
+                    for db_user_id, db_session_id in results:
+                        try:
+                            logger.info(f"Trying pattern 3 with user={db_user_id}, session={db_session_id}")
+                            
+                            if version is not None:
+                                artifact = await gcs_service.load_artifact(
+                                    app_name=app_name,
+                                    user_id=db_user_id,
+                                    session_id=db_session_id,
+                                    filename=artifact_name,
+                                    version=version
+                                )
+                            else:
+                                artifact = await gcs_service.load_artifact(
+                                    app_name=app_name,
+                                    user_id=db_user_id,
+                                    session_id=db_session_id,
+                                    filename=artifact_name
+                                )
+                            attempted_paths.append(f"{app_name}/{db_user_id}/{db_session_id}/{artifact_name}")
+                            if artifact:
+                                logger.info(f"Found artifact with pattern 3 (user={db_user_id}, session={db_session_id})")
+                                break
+                        except Exception as e3:
+                            logger.debug(f"Pattern 3 attempt failed for user={db_user_id}: {e3}")
+                    
+                    conn.close()
+                except Exception as e3:
+                    logger.warning(f"Pattern 3 failed: {e3}")
+            
+            if not artifact:
+                logger.error(f"Artifact not found after trying all patterns. Attempted paths: {attempted_paths}")
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Artifact not found: {artifact_name}. Tried paths: {attempted_paths}"
+                )
+                
+        except Exception as gcs_error:
+            logger.error(f"Failed to load artifact using GCS service: {gcs_error}")
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=f"Failed to load artifact from GCS: {str(gcs_error)}")
+        
+        # バイナリデータを取得
+        file_data = None
+        mime_type = "application/octet-stream"
+        
+        if artifact and hasattr(artifact, 'inline_data') and artifact.inline_data:
+            file_data = artifact.inline_data.data
+            if hasattr(artifact.inline_data, 'mime_type') and artifact.inline_data.mime_type:
+                mime_type = artifact.inline_data.mime_type
+        elif hasattr(artifact, 'data'):
+            file_data = artifact.data
+        else:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail="Unable to extract file data from artifact")
+        
+        # バイナリデータの確認
+        if file_data is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail="No file data found in artifact")
+        
+        # bytes型でない場合は変換
+        if isinstance(file_data, str):
+            file_data = file_data.encode('utf-8')
+        elif not isinstance(file_data, (bytes, bytearray)):
+            file_data = str(file_data).encode('utf-8')
+        
+        # ファイル拡張子からMIMEタイプを決定（inline_dataから取得できない場合のフォールバック）
+        if mime_type == "application/octet-stream":
+            def get_mime_type_from_extension(filename: str) -> str:
+                """ファイル拡張子からMIMEタイプを取得"""
+                extension = filename.lower().split('.')[-1] if '.' in filename else ''
+                mime_types = {
+                    'csv': 'text/csv',
+                    'txt': 'text/plain',
+                    'json': 'application/json',
+                    'pdf': 'application/pdf',
+                    'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    'xls': 'application/vnd.ms-excel',
+                    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    'doc': 'application/msword',
+                    'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                    'ppt': 'application/vnd.ms-powerpoint',
+                    'png': 'image/png',
+                    'jpg': 'image/jpeg',
+                    'jpeg': 'image/jpeg',
+                    'gif': 'image/gif',
+                    'svg': 'image/svg+xml',
+                    'html': 'text/html',
+                    'xml': 'application/xml',
+                    'zip': 'application/zip',
+                    'tar': 'application/x-tar',
+                    'gz': 'application/gzip'
+                }
+                return mime_types.get(extension, 'application/octet-stream')
+            
+            mime_type = get_mime_type_from_extension(artifact_name)
+        
+        # ストリーミングレスポンスを作成
+        def generate():
+            yield file_data
+        
+        logger.info(f"Streaming artifact download: {artifact_name} (size: {len(file_data)} bytes, mime_type: {mime_type})")
+        
+        return StreamingResponse(
+            generate(),
+            media_type=mime_type,
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{artifact_name}\"",
+                "Content-Length": str(len(file_data)),
+                "Cache-Control": "no-cache"
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to stream artifact download: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to download artifact: {str(e)}"
+        )
+
+@app.get("/download/artifact/by-invocation/{invocation_id}/{artifact_name}")
+async def download_artifact_by_invocation(
+    invocation_id: str,
+    artifact_name: str,
+    version: Optional[int] = None
+):
+    """invocationIdを使用してArtifactをダウンロード"""
+    try:
+        # GCS Artifact Service を直接使用
+        from google.adk.artifacts import GcsArtifactService
+        
+        # GCSバケット名を設定から取得
+        gcs_bucket_name = ARTIFACT_URL.replace("gs://", "")
+        
+        try:
+            # chat session情報デバッグ
+            from auth.session_sync_manager import get_session_sync_manager
+            sync_manager = get_session_sync_manager()
+            session_info = sync_manager.get_session_info(invocation_id)
+            logger.info(f"Session info: {session_info}")
+
+
+
+            # GCS Artifact Service の初期化
+            gcs_service = GcsArtifactService(bucket_name=gcs_bucket_name)
+            
+            # invocationIdベースでArtifactを検索
+            # invocationIdからapp_name, user_id, session_idを推測する必要があるが、
+            # 実際にはGCSの構造に依存する
+            
+            # まず、一般的なパターンでの検索を試行
+            app_name = "document_creating_agent"  # 固定値として使用
+            
+            # invocationIdから可能な限り情報を抽出
+            # 実際の実装では、invocationIdとセッション情報のマッピングが必要
+            
+            # フォールバック: 既知のパターンで検索
+            # 通常はinvocationIdとartifact情報のマッピングテーブルが必要だが、
+            # ここでは直接的なアプローチを取る
+            
+            # より直接的なアプローチ: invocationIdをsession_idとして使用
+            artifact = None
+            
+            # 方法1: invocationIdをsession_idとして使用して検索
+            try:
+                # ADK安定ユーザーID生成関数（main.pyの get_current_adk_user_id と同一）
+                def get_adk_stable_user_id_from_email(email: str) -> str:
+                    """emailからADK用の安定したユーザーID（16文字のハッシュ）を生成"""
+                    import hashlib
+                    normalized_email = email.strip().lower()
+                    hash_object = hashlib.sha256(normalized_email.encode('utf-8'))
+                    return hash_object.hexdigest()[:16]
+                
+                # リクエストが利用できないため、複数のユーザーIDパターンを試行
+                user_id_candidates = []
+                
+                # 1. データベースから最近のユーザーIDを取得し、email形式は変換
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(SESSION_DB_URL.replace('sqlite:///', ''))
+                    cursor = conn.cursor()
+                    
+                    # 最近のセッションからユーザーIDを取得
+                    cursor.execute("""
+                        SELECT DISTINCT user_id FROM sessions 
+                        WHERE app_name = ? 
+                        ORDER BY update_time DESC 
+                        LIMIT 20
+                    """, (app_name,))
+                    recent_users = [row[0] for row in cursor.fetchall()]
+                    
+                    # email形式のものはADK stable user IDに変換して追加
+                    for user_id in recent_users:
+                        if isinstance(user_id, str) and '@' in user_id:
+                            # email形式の場合は変換版も追加
+                            adk_user_id = get_adk_stable_user_id_from_email(user_id)
+                            user_id_candidates.append(adk_user_id)
+                            # 元のemail形式も念のため保持
+                            user_id_candidates.append(user_id)
+                        else:
+                            user_id_candidates.append(user_id)
+                    
+                    conn.close()
+                    logger.info(f"Found {len(recent_users)} recent users from database")
+                except Exception as db_error:
+                    logger.warning(f"Failed to get recent users from database: {db_error}")
+                
+                # 2. フォールバックパターン
+                user_id_candidates.extend(["anonymous", "test_user"])
+                
+                # 3. 重複除去
+                user_id_candidates = list(dict.fromkeys(user_id_candidates))
+                
+                # 各ユーザーIDでartifactを検索
+                for candidate_user_id in user_id_candidates:
+                    try:
+                        artifact = await gcs_service.load_artifact(
+                            app_name=app_name,
+                            user_id=candidate_user_id,
+                            session_id=invocation_id,
+                            filename=artifact_name,
+                            version=version
+                        )
+                        
+                        if artifact:
+                            logger.info(f"Found artifact using user_id={candidate_user_id}, session_id={invocation_id}")
+                            break
+                    except Exception as search_error:
+                        logger.debug(f"Search failed for user_id={candidate_user_id}, session_id={invocation_id}: {search_error}")
+                        continue
+                        
+            except Exception as e:
+                logger.warning(f"Failed to load artifact with invocation_id as session_id: {e}")
+            
+            # 方法2: 既存のsession情報を使用してinvocationId内のartifactを探す
+            if not artifact:
+                try:
+                    # 最近のセッション情報を使用
+                    import glob
+                    import os
+                    
+                    # GCSから直接検索する代替方法が必要
+                    # ここでは簡単な方法として、よく使われるパターンを試行
+                    common_users = ["anonymous", user_id] if user_id else ["anonymous"]
+                    common_sessions = [invocation_id, f"session_{datetime.now().strftime('%Y%m%d')}", "test_session"]
+                    
+                    for test_user in common_users:
+                        for test_session in common_sessions:
+                            try:
+                                artifact = await gcs_service.load_artifact(
+                                    app_name=app_name,
+                                    user_id=test_user,
+                                    session_id=test_session,
+                                    filename=artifact_name,
+                                    version=version
+                                )
+                                if artifact:
+                                    logger.info(f"Found artifact with user={test_user}, session={test_session}")
+                                    break
+                            except:
+                                continue
+                        if artifact:
+                            break
+                            
+                except Exception as e:
+                    logger.warning(f"Failed alternative search method: {e}")
+            
+            if not artifact:
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Artifact not found: {artifact_name} for invocation {invocation_id}"
+                )
+                
+        except Exception as gcs_error:
+            logger.error(f"Failed to load artifact using GCS service: {gcs_error}")
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=f"Failed to load artifact from GCS: {str(gcs_error)}")
+        
+        # バイナリデータを取得
+        file_data = None
+        mime_type = "application/octet-stream"
+        
+        if artifact and hasattr(artifact, 'inline_data') and artifact.inline_data:
+            file_data = artifact.inline_data.data
+            if hasattr(artifact.inline_data, 'mime_type') and artifact.inline_data.mime_type:
+                mime_type = artifact.inline_data.mime_type
+        elif hasattr(artifact, 'data'):
+            file_data = artifact.data
+        else:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail="Unable to extract file data from artifact")
+        
+        # バイナリデータの確認
+        if file_data is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail="No file data found in artifact")
+        
+        # bytes型でない場合は変換
+        if isinstance(file_data, str):
+            file_data = file_data.encode('utf-8')
+        elif not isinstance(file_data, (bytes, bytearray)):
+            file_data = str(file_data).encode('utf-8')
+        
+        # ファイル拡張子からMIMEタイプを決定（inline_dataから取得できない場合のフォールバック）
+        if mime_type == "application/octet-stream":
+            def get_mime_type_from_extension(filename: str) -> str:
+                """ファイル拡張子からMIMEタイプを取得"""
+                extension = filename.lower().split('.')[-1] if '.' in filename else ''
+                mime_types = {
+                    'csv': 'text/csv',
+                    'txt': 'text/plain',
+                    'json': 'application/json',
+                    'pdf': 'application/pdf',
+                    'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    'xls': 'application/vnd.ms-excel',
+                    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    'doc': 'application/msword',
+                    'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                    'ppt': 'application/vnd.ms-powerpoint',
+                    'png': 'image/png',
+                    'jpg': 'image/jpeg',
+                    'jpeg': 'image/jpeg',
+                    'gif': 'image/gif',
+                    'svg': 'image/svg+xml',
+                    'html': 'text/html',
+                    'xml': 'application/xml',
+                    'zip': 'application/zip',
+                    'tar': 'application/x-tar',
+                    'gz': 'application/gzip'
+                }
+                return mime_types.get(extension, 'application/octet-stream')
+            
+            mime_type = get_mime_type_from_extension(artifact_name)
+        
+        # ストリーミングレスポンスを作成
+        def generate():
+            yield file_data
+        
+        logger.info(f"Streaming artifact download by invocation: {artifact_name} (invocation: {invocation_id}, size: {len(file_data)} bytes, mime_type: {mime_type})")
+        
+        return StreamingResponse(
+            generate(),
+            media_type=mime_type,
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{artifact_name}\"",
+                "Content-Length": str(len(file_data)),
+                "Cache-Control": "no-cache"
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to stream artifact download by invocation: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to download artifact by invocation: {str(e)}"
+        )
 
 # セッションクリーンアップのバックグラウンドタスク
 # Note: FastAPIのlifespanイベントを使用してバックグラウンドタスクを管理
