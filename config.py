@@ -59,7 +59,9 @@ class AppConfig:
         if cls.GOOGLE_APPLICATION_CREDENTIALS:
             credentials_path = cls.GOOGLE_APPLICATION_CREDENTIALS.replace("/app/", "/app/")
             if not os.path.exists(credentials_path):
-                print(f"Warning: Google credentials file not found at {credentials_path}")
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Google credentials file not found at {credentials_path}")
         
         if not cls.ALLOWED_ORIGINS:
             raise ValueError("ALLOWED_ORIGINS cannot be empty")
