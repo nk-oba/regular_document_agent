@@ -2,7 +2,6 @@ import os
 import asyncio
 import time
 from contextlib import asynccontextmanager
-from dotenv import load_dotenv
 from google.adk.cli.fast_api import get_fast_api_app
 import uvicorn
 from fastapi import FastAPI, Response, Request
@@ -14,8 +13,16 @@ from typing import Optional
 import logging
 import io
 
+# Import new configuration and utilities
+from config import AppConfig, LogConfig
+from app_utils import generate_adk_user_id
+from error_handlers import handle_auth_error, handle_session_error, create_success_response
+
 # ログ設定
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=getattr(logging, LogConfig.LEVEL),
+    format=LogConfig.FORMAT
+)
 logger = logging.getLogger(__name__)
 
 # バックグラウンドタスク用のグローバル変数
@@ -32,25 +39,25 @@ async def session_cleanup_task():
             session_manager = get_session_auth_manager()
             session_manager.cleanup_expired_sessions()
             
-            # 孤立ADKセッションのクリーンアップ（3時間おき）
+            # 孤立ADKセッションのクリーンアップ
             current_time = int(time.time())
-            if current_time % (3 * 3600) < 60:  # 3時間の境界で実行
+            if current_time % AppConfig.ORPHANED_ADK_CLEANUP_INTERVAL < 60:
                 sync_manager = get_session_sync_manager()
                 orphaned_count = sync_manager.cleanup_orphaned_adk_sessions()
                 if orphaned_count > 0:
                     logger.info(f"Background cleanup: removed {orphaned_count} orphaned ADK sessions")
             
-            # 古いアーカイブチャットのクリーンアップ（24時間おき）
-            if current_time % (24 * 3600) < 60:  # 24時間の境界で実行
+            # 古いアーカイブチャットのクリーンアップ
+            if current_time % AppConfig.ARCHIVED_CHAT_CLEANUP_INTERVAL < 60:
                 sync_manager = get_session_sync_manager()
-                archived_deleted = sync_manager.cleanup_old_archived_chats(90)  # 90日以上古いもの
+                archived_deleted = sync_manager.cleanup_old_archived_chats(AppConfig.ARCHIVED_CHAT_RETENTION_DAYS)
                 if archived_deleted > 0:
                     logger.info(f"Background cleanup: removed {archived_deleted} old archived chats")
             
-            await asyncio.sleep(3600)  # 1時間ごと
+            await asyncio.sleep(AppConfig.SESSION_CLEANUP_INTERVAL)
         except Exception as e:
             logger.error(f"Session cleanup error: {e}")
-            await asyncio.sleep(3600)
+            await asyncio.sleep(AppConfig.SESSION_CLEANUP_INTERVAL)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -78,24 +85,14 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             logger.info("Session cleanup task cancelled")
 
-# agent engone parameters
-AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agents")
-SESSION_DB_URL = "sqlite:///./sessions.db"
-ARTIFACT_URL = "gs://dev-datap-agent-bucket"
-
-# セッション管理設定
-USE_UNIFIED_SESSION_MANAGEMENT = os.getenv("USE_UNIFIED_SESSION_MANAGEMENT", "true").lower() == "true"
-ALLOWED_ORIGINS = [
-    "http://127.0.0.1:3000", 
-    "http://localhost:3000", 
-    "http://127.0.0.1:8000", 
-    "http://localhost:8000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173"
-]
-SERVE_WEB_INTERFACE = True
-
-load_dotenv()
+# Configuration is now handled by AppConfig class
+# Legacy variables for backward compatibility
+AGENT_DIR = AppConfig.AGENT_DIR
+SESSION_DB_URL = AppConfig.SESSION_DB_URL
+ARTIFACT_URL = AppConfig.ARTIFACT_URL
+USE_UNIFIED_SESSION_MANAGEMENT = AppConfig.USE_UNIFIED_SESSION_MANAGEMENT
+ALLOWED_ORIGINS = AppConfig.ALLOWED_ORIGINS
+SERVE_WEB_INTERFACE = AppConfig.SERVE_WEB_INTERFACE
 
 # エージェントを安全にインポート
 try:
@@ -108,25 +105,24 @@ except Exception as e:
     root_agent = None
 
 try:
-    google_creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    if google_creds_path and os.path.exists(google_creds_path.replace("/app/", "/app/")):
-        logger.info(f"Using GCS Artifact Service with credentials: {google_creds_path}")
+    if AppConfig.is_gcs_enabled():
+        logger.info(f"Using GCS Artifact Service with credentials: {AppConfig.GOOGLE_APPLICATION_CREDENTIALS}")
         app: FastAPI = get_fast_api_app(
-            agents_dir=AGENT_DIR,
-            session_service_uri=SESSION_DB_URL,
-            artifact_service_uri=ARTIFACT_URL,  # GCSを使用
-            allow_origins=ALLOWED_ORIGINS,
-            web=SERVE_WEB_INTERFACE,
+            agents_dir=AppConfig.AGENT_DIR,
+            session_service_uri=AppConfig.SESSION_DB_URL,
+            artifact_service_uri=AppConfig.ARTIFACT_URL,  # GCSを使用
+            allow_origins=AppConfig.ALLOWED_ORIGINS,
+            web=AppConfig.SERVE_WEB_INTERFACE,
             lifespan=lifespan
         )
     else:
         logger.info("Using InMemory Artifact Service (no GCS credentials found)")
         app: FastAPI = get_fast_api_app(
-            agents_dir=AGENT_DIR,
-            session_service_uri=SESSION_DB_URL,
-            # artifact_service_uri=ARTIFACT_URL,  # InMemoryを使用
-            allow_origins=ALLOWED_ORIGINS,
-            web=SERVE_WEB_INTERFACE,
+            agents_dir=AppConfig.AGENT_DIR,
+            session_service_uri=AppConfig.SESSION_DB_URL,
+            # artifact_service_uri=AppConfig.ARTIFACT_URL,  # InMemoryを使用
+            allow_origins=AppConfig.ALLOWED_ORIGINS,
+            web=AppConfig.SERVE_WEB_INTERFACE,
             lifespan=lifespan
         )
 except Exception as e:
@@ -155,13 +151,13 @@ app.mount("/static", StaticFiles(directory="."), name="static")
 # CORS設定を最後に適用してget_fast_api_appの設定を上書き
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=AppConfig.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
+logger.info(f"CORS allowed origins: {AppConfig.ALLOWED_ORIGINS}")
 
 # 統一されたユーザー識別ヘルパー関数
 def get_current_user_id(request: Request = None) -> Optional[str]:
@@ -225,10 +221,8 @@ def get_current_adk_user_id(request: Request = None) -> str:
         
         if user_info and user_info.get("email"):
             # emailをベースにした安定的なuser_id（16文字）
-            import hashlib
-            email = user_info["email"].strip().lower()  # 正規化
-            hash_object = hashlib.sha256(email.encode('utf-8'))
-            adk_user_id = hash_object.hexdigest()[:16]
+            email = user_info["email"]
+            adk_user_id = generate_adk_user_id(email)
             
             # デバッグログ
             logger.debug(f"Generated ADK user ID: {adk_user_id} for email: {email[:5]}...")
@@ -339,13 +333,12 @@ async def oauth_callback(request: Request, code: Optional[str] = None, error: Op
                 
                 # セッションクッキー付きでリダイレクト
                 session_manager = get_session_auth_manager()
-                response = RedirectResponse(url="http://localhost:3000", status_code=302)
+                response = RedirectResponse(url=AppConfig.FRONTEND_REDIRECT_URL, status_code=302)
                 session_manager.set_session_cookie(response, session_id)
                 return response
                 
             except Exception as e:
-                logger.error(f"Failed to get user info: {e}")
-                return {"error": "Failed to get user information"}
+                return handle_auth_error(e, "get user info")
         else:
             logger.error("Failed to obtain OAuth credentials")
             return {
@@ -355,10 +348,7 @@ async def oauth_callback(request: Request, code: Optional[str] = None, error: Op
             }
         
     except Exception as e:
-        logger.error(f"OAuth callback error: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        return {"error": f"Authentication processing failed: {str(e)}"}
+        return handle_auth_error(e, "OAuth callback processing", include_traceback=True)
 
 # Google OAuth2.0認証ステータス確認エンドポイント
 @app.get("/auth/status")
@@ -381,8 +371,7 @@ async def auth_status(request: Request):
         return {"authenticated": False}
         
     except Exception as e:
-        logger.error(f"Auth status check error: {e}")
-        return {"authenticated": False, "error": str(e)}
+        return handle_auth_error(e, "auth status check")
 
 # Google OAuth2.0ログアウトエンドポイント
 @app.post("/auth/logout")
@@ -484,7 +473,7 @@ async def start_oauth(request: Request):
             auth_manager.client_secrets_file,
             scopes=auth_manager.scopes
         )
-        flow.redirect_uri = os.getenv('GOOGLE_OAUTH_REDIRECT_URI', 'http://localhost:8000/auth/callback')
+        flow.redirect_uri = AppConfig.GOOGLE_OAUTH_REDIRECT_URI
         
         auth_url, _ = flow.authorization_url(
             prompt='consent',
@@ -492,15 +481,13 @@ async def start_oauth(request: Request):
             include_granted_scopes='true'
         )
         
-        return {
-            "success": True,
-            "auth_url": auth_url,
-            "message": "Please visit the auth_url to complete authentication"
-        }
+        return create_success_response(
+            "Please visit the auth_url to complete authentication",
+            auth_url=auth_url
+        )
         
     except Exception as e:
-        logger.error(f"OAuth start error: {e}")
-        return {"error": f"Failed to start authentication: {str(e)}"}
+        return handle_auth_error(e, "OAuth start")
 
 # MCP ADA認証ステータス確認エンドポイント
 @app.get("/auth/mcp-ada/status")
