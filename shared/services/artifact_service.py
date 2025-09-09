@@ -7,9 +7,9 @@ from typing import Optional, Tuple, List, Any
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
-from config import AppConfig
-from app_utils import get_mime_type_from_extension, prepare_file_data, get_db_connection
-from error_handlers import handle_artifact_error
+from shared.core.config import AppConfig
+from shared.services.app_utils import get_mime_type_from_extension, prepare_file_data, get_db_connection
+from shared.services.error_handlers import handle_artifact_error
 
 logger = logging.getLogger(__name__)
 
@@ -367,7 +367,7 @@ class InvocationArtifactService:
         
     async def get_user_candidates(self, app_name: str) -> List[str]:
         """Get list of potential user IDs from recent sessions."""
-        from app_utils import generate_adk_user_id
+        from shared.services.app_utils import generate_adk_user_id
         
         user_candidates = []
         

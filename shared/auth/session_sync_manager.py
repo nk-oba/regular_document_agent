@@ -118,7 +118,7 @@ class SessionSyncManager:
             self._cleanup_adk_sessions_for_user(adk_user_id)
             
             # 2. ログインセッションを作成
-            from auth.session_auth import get_session_auth_manager
+            from shared.auth.session_auth import get_session_auth_manager
             session_manager = get_session_auth_manager()
             login_session_id = session_manager.create_session(user_info, credentials)
             
@@ -139,7 +139,7 @@ class SessionSyncManager:
         try:
             # 1. ログインセッション情報を取得してADKユーザーIDを推測
             if not adk_user_id:
-                from auth.session_auth import get_session_auth_manager
+                from shared.auth.session_auth import get_session_auth_manager
                 session_manager = get_session_auth_manager()
                 session_data = session_manager.get_session(login_session_id)
                 if session_data and session_data.get('user_info'):
@@ -191,7 +191,7 @@ class SessionSyncManager:
                 stats["user_last_activity"] = user_stats[1] if user_stats else None
             
             # ログインセッション統計
-            from auth.session_auth import get_session_auth_manager
+            from shared.auth.session_auth import get_session_auth_manager
             session_manager = get_session_auth_manager()
             login_stats = session_manager.get_session_stats()
             stats.update(login_stats)
@@ -211,7 +211,7 @@ class SessionSyncManager:
         """
         try:
             # 現在のログインセッションからアクティブユーザーIDを取得
-            from auth.session_auth import get_session_auth_manager
+            from shared.auth.session_auth import get_session_auth_manager
             session_manager = get_session_auth_manager()
             
             # すべてのログインセッションからemailを抽出

@@ -26,8 +26,8 @@ class UnifiedSessionManager:
         self.session_timeout = 24 * 60 * 60  # 24時間
         
         # 既存のセッション管理システムとの互換性を保持
-        from auth.session_auth import get_session_auth_manager
-        from auth.session_sync_manager import get_session_sync_manager
+        from shared.auth.session_auth import get_session_auth_manager
+        from shared.auth.session_sync_manager import get_session_sync_manager
         
         self.login_session_manager = get_session_auth_manager()
         self.sync_manager = get_session_sync_manager()

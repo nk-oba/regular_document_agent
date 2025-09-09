@@ -19,7 +19,7 @@ if os.path.dirname(__file__) not in sys.path:
 def check_authentication(request: Request) -> bool:
     """セッションベースの認証状態をチェックする関数"""
     try:
-        from auth.session_auth import get_session_auth_manager
+        from shared.auth.session_auth import get_session_auth_manager
         
         session_manager = get_session_auth_manager()
         return session_manager.is_authenticated(request)
@@ -39,7 +39,7 @@ def get_user_id_for_adk(request: Request) -> str:
         認証されていない場合は "anonymous"
     """
     try:
-        from auth.session_auth import get_session_auth_manager
+        from shared.auth.session_auth import get_session_auth_manager
         
         session_manager = get_session_auth_manager()
         user_info = session_manager.get_user_info(request)

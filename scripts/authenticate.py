@@ -9,7 +9,7 @@ import sys
 # パスを追加してagentsモジュールをインポート可能にする
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from auth.google_auth import get_auth_manager
+from shared.auth.google_auth import get_auth_manager
 
 def main():
     print("Google OAuth2.0認証を開始します...")

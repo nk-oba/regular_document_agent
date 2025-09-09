@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 def get_google_access_token():
     """Google認証トークンを安全に取得"""
     try:
-        from auth.google_auth import get_google_access_token as _get_token
+        from shared.auth.google_auth import get_google_access_token as _get_token
         return _get_token()
     except ImportError as e:
         logging.error(f"Google auth module not available: {e}")
@@ -140,7 +140,7 @@ async def generate_sample_csv_report(tool_context):
         import sys
         import os
         sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        from utils.artifact_user_helper import save_artifact_with_proper_user_id, format_download_section
+        from shared.utils.artifact_user_helper import save_artifact_with_proper_user_id, format_download_section
         
         # Artifactを適切なユーザー管理で保存
         save_result = await save_artifact_with_proper_user_id(
@@ -252,7 +252,7 @@ async def generate_monthly_performance_csv(tool_context, year: Optional[int] = N
         filename = f"monthly_performance_{year:04d}{month:02d}.csv"
         
         # 新しいヘルパー関数を使用してArtifactを保存
-        from utils.artifact_user_helper import save_artifact_with_proper_user_id, format_download_section
+        from shared.utils.artifact_user_helper import save_artifact_with_proper_user_id, format_download_section
         
         # Artifactを適切なユーザー管理で保存
         save_result = await save_artifact_with_proper_user_id(
@@ -432,7 +432,7 @@ async def generate_sample_report_artifact(tool_context, format_type: str = "json
         )
         
         # 新しいヘルパー関数を使用してArtifactを保存
-        from utils.artifact_user_helper import save_artifact_with_proper_user_id, format_download_section
+        from shared.utils.artifact_user_helper import save_artifact_with_proper_user_id, format_download_section
         
         # Artifactを適切なユーザー管理で保存
         save_result = await save_artifact_with_proper_user_id(

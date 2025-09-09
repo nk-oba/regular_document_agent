@@ -8,14 +8,14 @@ from fastapi import FastAPI, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from middleware import auth_middleware
+from shared.core.middleware import auth_middleware
 from typing import Optional
 import logging
 
-# Import new configuration and utilities
-from config import AppConfig, LogConfig
-from app_utils import generate_adk_user_id
-from error_handlers import handle_auth_error, create_success_response
+# Import shared modules
+from shared.core.config import AppConfig, LogConfig
+from shared.services.app_utils import generate_adk_user_id
+from shared.services.error_handlers import handle_auth_error, create_success_response
 
 # ログ設定
 logging.basicConfig(
@@ -1108,12 +1108,95 @@ async def download_artifact_by_invocation(
 # Note: FastAPIのlifespanイベントを使用してバックグラウンドタスクを管理
 
 # Include debug routes if debug mode is enabled
-from debug_routes import include_debug_routes
+from api.routes.debug_routes import include_debug_routes
 app = include_debug_routes(app)
 
 # Include authentication routes
-from auth_routes import include_auth_routes
+from api.routes.auth_routes import include_auth_routes
 app = include_auth_routes(app)
+
+# カスタムエンドポイント関数を定義
+async def custom_list_apps():
+    """利用可能なAIエージェント（アプリケーション）の一覧を返す"""
+    try:
+        import os
+        import json
+        
+        logger.info("Custom /list-apps endpoint called")
+        
+        agents_dir = AppConfig.AGENT_DIR
+        available_apps = []
+        
+        # ai_agents ディレクトリを探索
+        if os.path.exists(agents_dir):
+            for item in os.listdir(agents_dir):
+                agent_path = os.path.join(agents_dir, item)
+                
+                # ディレクトリかつ、__init__.py または agent.py が存在するものをエージェントとみなす
+                if os.path.isdir(agent_path):
+                    init_py = os.path.join(agent_path, "__init__.py")
+                    agent_py = os.path.join(agent_path, "agent.py")
+                    
+                    if os.path.exists(init_py) or os.path.exists(agent_py):
+                        # エージェント設定ファイルがあれば読み込み
+                        config_file = os.path.join(agent_path, "config.json")
+                        agent_info = {
+                            "name": item,
+                            "id": item,
+                            "display_name": item.replace("_", " ").title(),
+                            "description": f"{item} AI Agent",
+                            "available": True
+                        }
+                        
+                        # config.json がある場合は設定を読み込み
+                        if os.path.exists(config_file):
+                            try:
+                                with open(config_file, 'r', encoding='utf-8') as f:
+                                    config = json.load(f)
+                                    agent_info.update(config)
+                            except Exception as e:
+                                logger.warning(f"Failed to read config for {item}: {e}")
+                        
+                        available_apps.append(agent_info)
+        
+        logger.info(f"Found {len(available_apps)} available AI agents")
+        result = {
+            "apps": available_apps,
+            "count": len(available_apps)
+        }
+        logger.info(f"Returning result: {result}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to list apps: {e}")
+        return {
+            "apps": [],
+            "count": 0,
+            "error": str(e)
+        }
+
+# 既存の /list-apps ルートがあれば削除して、カスタムエンドポイントを追加
+try:
+    # 既存のルートを探して削除
+    routes_to_remove = []
+    for route in app.routes:
+        if hasattr(route, 'path') and route.path == "/list-apps":
+            routes_to_remove.append(route)
+    
+    for route in routes_to_remove:
+        app.routes.remove(route)
+        logger.info("Removed existing /list-apps route")
+    
+    # カスタムルートを追加
+    app.add_api_route("/list-apps", custom_list_apps, methods=["GET"], tags=["agents"])
+    logger.info("Added custom /list-apps route")
+    
+except Exception as e:
+    logger.warning(f"Failed to replace /list-apps route: {e}")
+    # フォールバックとして通常のデコレータを使用
+    @app.get("/list-apps")
+    async def list_apps():
+        return await custom_list_apps()
 
 if __name__ == "__main__":
     logger.info("Starting application...")

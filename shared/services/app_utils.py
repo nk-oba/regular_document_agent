@@ -7,7 +7,7 @@ import sqlite3
 import logging
 from typing import Optional, Dict, Any
 from contextlib import contextmanager
-from config import AppConfig
+from shared.core.config import AppConfig
 
 logger = logging.getLogger(__name__)
 

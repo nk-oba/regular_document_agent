@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 def get_google_access_token():
     """Google認証トークンを安全に取得"""
     try:
-        from auth.google_auth import get_google_access_token as _get_token
+        from shared.auth.google_auth import get_google_access_token as _get_token
         return _get_token()
     except ImportError as e:
         logging.error(f"Google auth module not available: {e}")

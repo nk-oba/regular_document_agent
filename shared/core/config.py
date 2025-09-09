@@ -18,7 +18,7 @@ class AppConfig:
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
     
     # Agent engine parameters
-    AGENT_DIR: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agents")
+    AGENT_DIR: str = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "ai_agents")
     SESSION_DB_URL: str = "sqlite:///./sessions.db"
     ARTIFACT_URL: str = "gs://dev-datap-agent-bucket"
     

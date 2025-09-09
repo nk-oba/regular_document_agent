@@ -17,7 +17,7 @@ sys.path.append(os.path.dirname(__file__))
 async def test_artifact_helper():
     """Artifact保存ヘルパー関数のテスト"""
     try:
-        from utils.artifact_user_helper import (
+        from shared.utils.artifact_user_helper import (
             get_artifact_user_info, 
             save_artifact_with_proper_user_id,
             format_download_section,
@@ -84,7 +84,7 @@ async def test_artifact_helper():
 def test_user_id_consistency():
     """ユーザーID生成の一貫性テスト"""
     try:
-        from utils.artifact_user_helper import get_adk_stable_user_id_from_email
+        from shared.utils.artifact_user_helper import get_adk_stable_user_id_from_email
         
         test_cases = [
             "user@example.com",

@@ -7,9 +7,12 @@ import sqlite3
 import hashlib
 from typing import Optional
 from fastapi import Request, APIRouter
-from config import AppConfig
-from app_utils import generate_adk_user_id, get_db_connection
-from error_handlers import handle_generic_error
+from shared.core.config import AppConfig
+from shared.services.app_utils import generate_adk_user_id, get_db_connection
+from shared.services.error_handlers import handle_generic_error
+from shared.auth.session_auth import get_session_auth_manager
+from shared.auth.session_sync_manager import get_session_sync_manager
+from shared.auth.unified_session_manager import get_unified_session_manager
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +25,6 @@ def get_current_adk_user_id(request: Request = None) -> str:
         if not request:
             return "anonymous"
         
-        from auth.session_auth import get_session_auth_manager
         
         session_manager = get_session_auth_manager()
         user_info = session_manager.get_user_info(request)
@@ -42,7 +44,6 @@ def get_current_adk_user_id(request: Request = None) -> str:
 async def debug_user_info(request: Request):
     """デバッグ用：現在のユーザー識別情報を詳細表示"""
     try:
-        from auth.session_auth import get_session_auth_manager
         
         # セッション情報を取得
         session_manager = get_session_auth_manager()
@@ -88,8 +89,6 @@ async def debug_user_info(request: Request):
 async def debug_sessions_comparison(request: Request):
     """デバッグ用：セッション管理システムの比較"""
     try:
-        from auth.session_auth import get_session_auth_manager
-        from auth.unified_session_manager import get_unified_session_manager
         
         # 現在のユーザー情報
         session_manager = get_session_auth_manager()
@@ -208,7 +207,6 @@ async def debug_artifact_paths(request: Request):
         }
         
         # 現在のログイン情報
-        from auth.session_auth import get_session_auth_manager
         session_manager = get_session_auth_manager()
         user_info = session_manager.get_user_info(request)
         
@@ -242,9 +240,6 @@ async def debug_artifact_paths(request: Request):
 async def verify_user_id_consistency(request: Request):
     """ユーザーID生成の一貫性を検証"""
     try:
-        from auth.session_auth import get_session_auth_manager
-        from auth.unified_session_manager import get_unified_session_manager
-        from auth.session_sync_manager import get_session_sync_manager
         from middleware import get_user_id_for_adk
         
         # セッション情報を取得

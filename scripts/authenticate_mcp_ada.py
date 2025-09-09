@@ -11,7 +11,7 @@ import logging
 # パスを追加してauth モジュールをインポート可能にする
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from auth.mcp_ada_auth import get_mcp_ada_auth_manager
+from shared.auth.mcp_ada_auth import get_mcp_ada_auth_manager
 
 def main():
     """MCP ADA認証を実行"""

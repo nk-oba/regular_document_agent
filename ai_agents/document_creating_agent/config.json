@@ -1,0 +1,12 @@
+{
+  "display_name": "Document Creating Agent",
+  "description": "AI agent specialized in creating and managing various types of documents",
+  "version": "1.0.0",
+  "category": "document_processing",
+  "capabilities": [
+    "document_creation",
+    "content_generation", 
+    "format_conversion",
+    "template_processing"
+  ]
+}

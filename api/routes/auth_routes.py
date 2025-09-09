@@ -3,14 +3,18 @@ Authentication Routes Module
 Contains all authentication-related endpoints including OAuth, session management, and MCP auth.
 """
 import logging
-import os
 from typing import Optional
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse, HTMLResponse
 
-from config import AppConfig
-from app_utils import generate_adk_user_id
-from error_handlers import handle_auth_error, handle_session_error, create_success_response
+from shared.core.config import AppConfig
+from shared.services.app_utils import generate_adk_user_id
+from shared.services.error_handlers import handle_auth_error, handle_session_error, create_success_response
+from shared.auth.google_auth import get_auth_manager
+from shared.auth.session_auth import get_session_auth_manager
+from shared.auth.session_sync_manager import get_session_sync_manager
+from shared.auth.mcp_ada_auth import get_mcp_ada_auth_manager
+from shared.auth.unified_session_manager import get_unified_session_manager
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +34,6 @@ async def oauth_callback(code: Optional[str] = None, error: Optional[str] = None
         logger.info(f"Processing OAuth callback with code: {code[:20]}...")
         
         # 認証コードをauth moduleに渡して処理
-        import sys
-        sys.path.append(os.path.dirname(__file__))
-        from auth.google_auth import get_auth_manager
-        from auth.session_auth import get_session_auth_manager
         
         # 一時的な認証マネージャーを使用してトークンを取得
         temp_auth_manager = get_auth_manager()
@@ -56,7 +56,6 @@ async def oauth_callback(code: Optional[str] = None, error: Optional[str] = None
                 if AppConfig.USE_UNIFIED_SESSION_MANAGEMENT:
                     # 統合セッション管理を使用（フォールバック付き）
                     try:
-                        from auth.unified_session_manager import get_unified_session_manager
                         unified_manager = get_unified_session_manager()
                         unified_session = unified_manager.create_unified_session(user_data, credentials)
                         session_id = unified_session["login_session_id"]
@@ -65,18 +64,15 @@ async def oauth_callback(code: Optional[str] = None, error: Optional[str] = None
                     except Exception as e:
                         logger.warning(f"Unified session failed, using sync manager: {e}")
                         # フォールバック: 従来のセッション同期管理
-                        from auth.session_sync_manager import get_session_sync_manager
                         sync_manager = get_session_sync_manager()
                         session_id, adk_user_id = sync_manager.on_login(user_data, credentials)
                 else:
                     # 従来のセッション同期管理を使用
-                    from auth.session_sync_manager import get_session_sync_manager
                     sync_manager = get_session_sync_manager()
                     session_id, adk_user_id = sync_manager.on_login(user_data, credentials)
                 
                 # MCP用認証情報の保存
                 try:
-                    from auth.mcp_ada_auth import get_mcp_ada_auth_manager
                     mcp_auth_manager = get_mcp_ada_auth_manager()
                     user_id = generate_adk_user_id(user_data["email"])
                     mcp_auth_manager.save_user_credentials(user_id, credentials)
@@ -109,10 +105,6 @@ async def oauth_callback(code: Optional[str] = None, error: Optional[str] = None
 async def auth_status(request: Request):
     """現在の認証ステータスを確認（セッションベース）"""
     try:
-        import sys
-        sys.path.append(os.path.dirname(__file__))
-        from auth.session_auth import get_session_auth_manager
-        
         session_manager = get_session_auth_manager()
         user_info = session_manager.get_user_info(request)
         
@@ -131,8 +123,6 @@ async def auth_status(request: Request):
 async def logout(request: Request, response: Response):
     """認証情報をクリア（セッションベース）"""
     try:
-        from auth.session_auth import get_session_auth_manager
-        from auth.session_sync_manager import get_session_sync_manager
         
         session_manager = get_session_auth_manager()
         sync_manager = get_session_sync_manager()
@@ -157,7 +147,6 @@ async def start_oauth():
     """Google OAuth認証を開始"""
     try:
         from google_auth_oauthlib.flow import Flow
-        from auth.google_auth import get_auth_manager
         
         auth_manager = get_auth_manager()
         flow = Flow.from_client_secrets_file(
@@ -185,9 +174,6 @@ async def start_oauth():
 async def mcp_ada_auth_status():
     """MCP ADA認証ステータスを確認（ユーザー共通）"""
     try:
-        import sys
-        sys.path.append(os.path.dirname(__file__))
-        from auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
         # MCP用のユーザーIDを取得（ユーザー共通）
         user_id = "shared_user"  # MCP ADAは共通ユーザー
@@ -216,7 +202,6 @@ async def mcp_ada_auth_status():
 async def mcp_ada_authenticate(user_id: str = "shared_user"):
     """MCP ADA認証を開始"""
     try:
-        from auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
         mcp_auth_manager = get_mcp_ada_auth_manager()
         auth_url = mcp_auth_manager.get_authorization_url(user_id)
@@ -234,7 +219,6 @@ async def mcp_ada_authenticate(user_id: str = "shared_user"):
 async def mcp_ada_callback(request: Request):
     """MCP ADA認証コールバック"""
     try:
-        from auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
         # クエリパラメータから認証コードを取得
         code = request.query_params.get('code')
@@ -269,7 +253,6 @@ async def mcp_ada_callback(request: Request):
 async def mcp_ada_logout(user_id: str = "shared_user"):
     """MCP ADA認証をクリア"""
     try:
-        from auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
         mcp_auth_manager = get_mcp_ada_auth_manager()
         mcp_auth_manager.clear_credentials(user_id)
@@ -284,8 +267,6 @@ async def mcp_ada_logout(user_id: str = "shared_user"):
 async def get_session_info(request: Request):
     """現在のセッション情報を取得"""
     try:
-        from auth.session_auth import get_session_auth_manager
-        from auth.session_sync_manager import get_session_sync_manager
         
         session_manager = get_session_auth_manager()
         sync_manager = get_session_sync_manager()
@@ -314,8 +295,6 @@ async def get_session_info(request: Request):
 async def list_sessions(request: Request):
     """現在のユーザーのセッション一覧を取得"""
     try:
-        from auth.session_auth import get_session_auth_manager
-        from auth.session_sync_manager import get_session_sync_manager
         
         session_manager = get_session_auth_manager()
         sync_manager = get_session_sync_manager()
@@ -342,8 +321,6 @@ async def list_sessions(request: Request):
 async def delete_session(session_id: str, request: Request):
     """指定されたセッションを削除"""
     try:
-        from auth.session_auth import get_session_auth_manager
-        from auth.session_sync_manager import get_session_sync_manager
         
         session_manager = get_session_auth_manager()
         sync_manager = get_session_sync_manager()
