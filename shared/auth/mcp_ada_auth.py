@@ -321,11 +321,11 @@ class MCPADAAuthManager:
     def _register_client(self) -> bool:
         """動的クライアント登録を実行"""
         try:
-            logging.info(f"Registering MCP ADA client with endpoint: {self.registration_endpoint}")
+            logging.info(f"Registering MCP Ad Analyzer client with endpoint: {self.registration_endpoint}")
             logging.info(f"Redirect URI: {self.redirect_uri}")
             
             registration_data = {
-                "client_name": "MCP ADA Client",
+                "client_name": "MCP Ad Analyzer Client",
                 "redirect_uris": [self.redirect_uri],
                 "grant_types": ["authorization_code", "refresh_token"],
                 "response_types": ["code"],
@@ -377,11 +377,11 @@ class MCPADAAuthManager:
         """認証情報を削除"""
         if os.path.exists(self.credentials_file):
             os.remove(self.credentials_file)
-            logging.info("MCP ADA credentials revoked")
+            logging.info("MCP Ad Analyzer credentials revoked")
         
         if os.path.exists(self.client_credentials_file):
             os.remove(self.client_credentials_file)
-            logging.info("MCP ADA client credentials revoked")
+            logging.info("MCP Ad Analyzer client credentials revoked")
 
 # ユーザー単位のインスタンス管理
 _mcp_ada_auth_managers = {}
