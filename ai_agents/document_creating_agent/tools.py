@@ -33,12 +33,22 @@ def get_tools():
     tools.extend([
         generate_sample_csv_report,
         generate_monthly_performance_csv,
-        generate_sample_report_artifact
+        generate_sample_report_artifact,
+        authenticate_mcp_server_tool,
+        make_mcp_authenticated_request_tool,
+        check_mcp_auth_status_tool
     ])
+    
+    # list_tools関数をインポートして追加
+    try:
+        from list_tools import list_tools
+        tools.append(list_tools)
+    except ImportError as e:
+        logging.warning(f"Failed to import list_tools: {e}")
     
     # MCPツールの初期化をスキップしてサーバー起動を優先
     logging.info("MCP tools will be initialized on first use (lazy loading)")
-    logging.info(f"Added {len(tools)} artifact generation tools")
+    logging.info(f"Added {len(tools)} tools (including {3} MCP auth tools)")
     
     # 注意：実際のMCPツールの初期化は get_mcp_ada_tool_lazy() などで行う
     return tools
@@ -478,4 +488,202 @@ async def generate_sample_report_artifact(tool_context, format_type: str = "json
     except Exception as e:
         error_msg = f"{format_type}レポート生成中にエラーが発生しました: {str(e)}"
         logging.error(error_msg)
+        return error_msg
+
+
+# ==============================================================================
+# MCP認証ツール統合
+# ==============================================================================
+
+async def authenticate_mcp_server_tool(
+    tool_context,
+    server_url: str,
+    user_id: Optional[str] = None,
+    scopes: Optional[list[str]] = None
+):
+    """
+    MCP ADA準拠のOAuth 2.1認証を実行するツール
+    
+    Args:
+        tool_context: ADK tool context
+        server_url: 認証対象のMCPサーバーURL
+        user_id: ユーザーID（未指定の場合はセッションから自動取得）
+        scopes: 要求するスコープリスト（デフォルト: ["mcp:reports", "mcp:properties"]）
+        
+    Returns:
+        str: 認証結果メッセージ
+    """
+    try:
+        # セッション情報からユーザーIDを自動取得（user_idが未指定の場合）
+        if user_id is None:
+            from session_user_helper import get_user_id_from_session
+            user_id = get_user_id_from_session(tool_context)
+        
+        # MCP認証ツールセットをインポート
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        from mcp_client.mcp_toolset import authenticate_mcp_server_helper
+        
+        # MCP ADA専用スコープをデフォルトに設定
+        if scopes is None:
+            scopes = ["mcp:reports", "mcp:properties"]
+        
+        logging.info(f"Authenticating to MCP server: {server_url} (user: {user_id}, scopes: {scopes})")
+        
+        # MCP認証を実行
+        result = await authenticate_mcp_server_helper(server_url, user_id, scopes)
+        
+        logging.info(f"MCP authentication completed for {server_url}")
+        return result
+        
+    except ImportError as e:
+        error_msg = f"❌ MCP認証ツールが利用できません: {e}\n\n💡 MCP認証フレームワークが正しくインストールされているか確認してください。"
+        logging.error(error_msg)
+        return error_msg
+    except Exception as e:
+        error_msg = f"❌ MCP認証中にエラーが発生しました: {str(e)}"
+        logging.error(error_msg)
+        import traceback
+        traceback.print_exc()
+        return error_msg
+
+
+async def make_mcp_authenticated_request_tool(
+    tool_context,
+    server_url: str,
+    method: str,
+    path: str,
+    user_id: Optional[str] = None,
+    headers: Optional[dict] = None,
+    json_data: Optional[dict] = None,
+    query_params: Optional[dict] = None
+):
+    """
+    MCP認証付きHTTPリクエストを実行するツール
+    
+    Args:
+        tool_context: ADK tool context
+        server_url: MCPサーバーURL
+        method: HTTPメソッド（GET, POST, PUT, DELETE, PATCH）
+        path: リクエストパス
+        user_id: ユーザーID（未指定の場合はセッションから自動取得）
+        headers: 追加のHTTPヘッダー
+        json_data: JSONボディデータ
+        query_params: クエリパラメータ
+        
+    Returns:
+        str: リクエスト結果
+    """
+    try:
+        # セッション情報からユーザーIDを自動取得（user_idが未指定の場合）
+        if user_id is None:
+            from session_user_helper import get_user_id_from_session
+            user_id = get_user_id_from_session(tool_context)
+        # MCP認証ツールセットをインポート
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        from mcp_client.mcp_toolset import mcp_request_helper
+        
+        # パラメータの準備
+        kwargs = {}
+        if headers:
+            kwargs["headers"] = headers
+        if json_data:
+            kwargs["json"] = json_data
+        if query_params:
+            kwargs["params"] = query_params
+        
+        logging.info(f"Making authenticated request: {method} {server_url}{path} (user: {user_id})")
+        
+        # MCP認証付きリクエストを実行
+        result = await mcp_request_helper(
+            server_url,
+            method.upper(),
+            path,
+            user_id,
+            **kwargs
+        )
+        
+        logging.info(f"MCP request completed: {method} {server_url}{path}")
+        return result
+        
+    except ImportError as e:
+        error_msg = f"❌ MCP認証ツールが利用できません: {e}\n\n💡 MCP認証フレームワークが正しくインストールされているか確認してください。"
+        logging.error(error_msg)
+        return error_msg
+    except Exception as e:
+        error_msg = f"❌ MCP認証付きリクエスト中にエラーが発生しました: {str(e)}"
+        logging.error(error_msg)
+        import traceback
+        traceback.print_exc()
+        return error_msg
+
+
+async def check_mcp_auth_status_tool(
+    tool_context,
+    server_url: str,
+    user_id: Optional[str] = None
+):
+    """
+    MCP認証状態を確認するツール
+    
+    Args:
+        tool_context: ADK tool context
+        server_url: MCPサーバーURL
+        user_id: ユーザーID（未指定の場合はセッションから自動取得）
+        
+    Returns:
+        str: 認証状態情報
+    """
+    try:
+        # セッション情報からユーザーIDを自動取得（user_idが未指定の場合）
+        if user_id is None:
+            from session_user_helper import get_user_id_from_session
+            user_id = get_user_id_from_session(tool_context)
+        # MCP認証ツールセットをインポート
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        from mcp_client.mcp_toolset import get_mcp_auth_toolset
+        
+        logging.info(f"Checking auth status for: {server_url} (user: {user_id})")
+        
+        # 認証状態をチェック
+        auth_toolset = get_mcp_auth_toolset()
+        status_result = await auth_toolset.check_status(server_url, user_id)
+        
+        # 結果をフォーマット
+        if status_result.get("authenticated"):
+            result = f"""✅ 認証状態確認完了
+
+{status_result.get('result', '')}
+
+💡 **状態**: 認証済み
+🌐 **サーバー**: {server_url}
+👤 **ユーザー**: {user_id}
+"""
+        else:
+            result = f"""❌ 認証が必要です
+
+🌐 **サーバー**: {server_url}
+👤 **ユーザー**: {user_id}
+🔐 **状態**: 未認証
+
+💡 **次のステップ**: 
+```
+authenticate_mcp_server_tool("{server_url}", "{user_id}")
+```
+を実行して認証してください。
+
+エラー詳細: {status_result.get('error', 'Unknown error')}
+"""
+        
+        logging.info(f"Auth status check completed for {server_url}")
+        return result
+        
+    except ImportError as e:
+        error_msg = f"❌ MCP認証ツールが利用できません: {e}\n\n💡 MCP認証フレームワークが正しくインストールされているか確認してください。"
+        logging.error(error_msg)
+        return error_msg
+    except Exception as e:
+        error_msg = f"❌ MCP認証状態確認中にエラーが発生しました: {str(e)}"
+        logging.error(error_msg)
+        import traceback
+        traceback.print_exc()
         return error_msg

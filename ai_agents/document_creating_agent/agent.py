@@ -31,17 +31,17 @@ except Exception as e:
     logging.error(f"Failed to load MCP tools: {str(e)}")
 
 sub_agents = []
-try:
-    sub_agents.append(ad_analyzer_agent)
-    logging.info("Successfully loaded ad_analyzer_agent")
-except Exception as e:
-    logging.error(f"Failed to load ad_analyzer_agent: {str(e)}")
+# try:
+#     sub_agents.append(ad_analyzer_agent)
+#     logging.info("Successfully loaded ad_analyzer_agent")
+# except Exception as e:
+#     logging.error(f"Failed to load ad_analyzer_agent: {str(e)}")
 
-try:
-    sub_agents.append(playwright_agent)
-    logging.info("Successfully loaded playwright_agent")
-except Exception as e:
-    logging.error(f"Failed to load playwright_agent: {str(e)}")
+# try:
+#     sub_agents.append(playwright_agent)
+#     logging.info("Successfully loaded playwright_agent")
+# except Exception as e:
+#     logging.error(f"Failed to load playwright_agent: {str(e)}")
 
 # slide_agentはコメントアウト
 # try:

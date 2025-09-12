@@ -26,6 +26,10 @@ class MCPADAAuthManager:
         if user_id:
             self.credentials_file = f"auth_storage/mcp_ada_auth/mcp_ada_credentials_{user_id}.json"
             self.client_credentials_file = f"auth_storage/mcp_ada_auth/mcp_ada_client_{user_id}.json"
+        else:
+            # デフォルトのファイル名を設定
+            self.credentials_file = "auth_storage/mcp_ada_auth/mcp_ada_credentials_default.json"
+            self.client_credentials_file = "auth_storage/mcp_ada_auth/mcp_ada_client_default.json"
         self.scopes = ["mcp:reports", "mcp:properties"]
         # 環境変数でリダイレクトURIを設定可能にする
         # デフォルトは現在のホストとポートを使用

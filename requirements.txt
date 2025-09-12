@@ -80,3 +80,8 @@ uvicorn==0.34.3
 websockets==15.0.1
 zipp==3.23.0
 google-auth-oauthlib==1.2.1
+
+# MCP Client Authentication Framework Dependencies
+pytest==8.3.3
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0

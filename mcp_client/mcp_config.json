@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "mcp-auth-client": {
+      "command": "python",
+      "args": ["-m", "agents.mcp_client.mcp_server"],
+      "cwd": "/Users/usr0302483/projects/ai_solution_pjt/regular_document_creation",
+      "env": {
+        "PYTHONPATH": "/Users/usr0302483/projects/ai_solution_pjt/regular_document_creation",
+        "MCP_CLIENT_LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}
