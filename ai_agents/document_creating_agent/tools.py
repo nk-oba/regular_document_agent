@@ -50,7 +50,19 @@ def get_tools():
     logging.info("MCP tools will be initialized on first use (lazy loading)")
     logging.info(f"Added {len(tools)} tools (including {3} MCP auth tools)")
     
-    # 注意：実際のMCPツールの初期化は get_mcp_ada_tool_lazy() などで行う
+    # MCP ADAが認証済みの場合、サーバーから実際のツールを動的に取得
+    try:
+        from mcp_dynamic_tools import create_mcp_ada_dynamic_tools
+        dynamic_mcp_tools = create_mcp_ada_dynamic_tools()
+        
+        if dynamic_mcp_tools:
+            tools.extend(dynamic_mcp_tools)
+            logging.info(f"Added {len(dynamic_mcp_tools)} dynamic MCP ADA tools to available tools")
+        else:
+            logging.info("No MCP ADA tools available or not authenticated")
+    except Exception as e:
+        logging.warning(f"Failed to load dynamic MCP ADA tools: {e}")
+    
     return tools
 
 
