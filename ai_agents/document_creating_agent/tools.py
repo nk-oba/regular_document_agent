@@ -31,9 +31,9 @@ def get_tools():
     
     # Artifact生成ツールを追加
     tools.extend([
-        generate_sample_csv_report,
-        generate_monthly_performance_csv,
-        generate_sample_report_artifact,
+        # generate_sample_csv_report,
+        # generate_monthly_performance_csv,
+        # generate_sample_report_artifact,
         authenticate_mcp_server_tool,
         make_mcp_authenticated_request_tool,
         check_mcp_auth_status_tool
@@ -79,13 +79,16 @@ def get_mcp_ada_tool():
             return None
         
         logging.debug(f"Initializing MCP ADA tool: {URL}")
+        logging.debug(f"Using access token: {access_token[:20]}..." if access_token else "No access token")
+        
+        # デバッグ: ヘッダー情報をログ出力
+        headers = {"Authorization": f"Bearer {access_token}"}
+        logging.debug(f"Request headers: {headers}")
         
         toolset = MCPToolset(
             connection_params=StreamableHTTPConnectionParams(
                 url=URL,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                },
+                headers=headers,
             )
         )
         

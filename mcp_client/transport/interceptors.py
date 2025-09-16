@@ -68,7 +68,7 @@ class Auth401Interceptor:
             if self._auth_in_progress:
                 # 他の処理が認証中の場合は少し待つ
                 logger.debug("Authentication already in progress, waiting...")
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.5)
                 
                 # 認証完了後にリクエストを再試行
                 return await request_func()

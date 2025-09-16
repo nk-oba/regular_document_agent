@@ -40,6 +40,7 @@ class AuthenticatedHTTPClient:
         self._auth_callback: Optional[Callable[[str], None]] = None
         
         logger.debug(f"AuthenticatedHTTPClient initialized for {auth_client.server_url}")
+        logger.debug(f"Max retries: {max_retries}, Retry backoff factor: {retry_backoff_factor}")
     
     def set_auth_callback(self, callback: Callable[[str], None]):
         """認証コールバックを設定
@@ -74,12 +75,32 @@ class AuthenticatedHTTPClient:
         
         for attempt in range(self.max_retries + 1):
             try:
+                # デバッグ: リクエスト詳細をログ出力
+                full_url = f"{self.auth_client.server_url}{path}"
+                logger.debug(f"[MCP REQUEST] {method} {full_url}")
+                logger.debug(f"[MCP REQUEST] Headers: {kwargs.get('headers', 'None')}")
+                if kwargs.get('json'):
+                    logger.debug(f"[MCP REQUEST] JSON Body: {kwargs['json']}")
+                if kwargs.get('params'):
+                    logger.debug(f"[MCP REQUEST] Query Params: {kwargs['params']}")
+                
                 # 認証付きリクエストを実行
                 response = await self.auth_client.make_authenticated_request(
                     method, path, **kwargs
                 )
                 
-                logger.debug(f"{method} {path} -> {response.status_code}")
+                # デバッグ: レスポンス詳細をログ出力
+                logger.debug(f"[MCP RESPONSE] {method} {path} -> Status: {response.status_code}")
+                logger.debug(f"[MCP RESPONSE] Headers: {dict(response.headers)}")
+                try:
+                    response_text = response.text
+                    if len(response_text) > 1000:
+                        logger.debug(f"[MCP RESPONSE] Body (truncated): {response_text[:1000]}...")
+                    else:
+                        logger.debug(f"[MCP RESPONSE] Body: {response_text}")
+                except Exception as e:
+                    logger.debug(f"[MCP RESPONSE] Body read error: {e}")
+                
                 return response
                 
             except AuthenticationRequiredError as e:

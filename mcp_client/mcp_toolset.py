@@ -34,6 +34,7 @@ class MCPAuthToolset:
         
         try:
             logger.info("Initializing MCP Auth Client toolset...")
+            logger.debug(f"MCP server path: {mcp_server_path}")
             
             # MCP認証クライアントサーバーのパス
             mcp_server_path = os.path.join(current_dir, "mcp_server.py")

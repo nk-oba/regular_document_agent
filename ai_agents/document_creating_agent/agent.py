@@ -20,7 +20,15 @@ STATE_PLAYWRIGHT_DOC = "current_doc"
 
 load_dotenv()
 
-logging.basicConfig(level=logging.DEBUG)
+# MCP ADAデバッグログを有効化
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# MCP関連のログを特に詳細に設定
+logging.getLogger('mcp_client').setLevel(logging.DEBUG)
+logging.getLogger('google.adk').setLevel(logging.DEBUG)
 
 tools = [load_artifacts]
 try:

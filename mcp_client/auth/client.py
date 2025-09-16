@@ -212,6 +212,7 @@ class MCPAuthClient:
         
         # アクセストークンを取得
         access_token = await self.get_access_token()
+        logger.debug(f"[MCP AUTH] Using access token: {access_token[:20] if access_token else 'None'}...")
         
         # 認証ヘッダーを追加
         headers = kwargs.get('headers', {})
@@ -219,12 +220,15 @@ class MCPAuthClient:
             headers['Authorization'] = f'Bearer {access_token}'
         
         kwargs['headers'] = headers
+        logger.debug(f"[MCP AUTH] Request headers: {headers}")
         
         # URL構築
         url = f"{self.server_url}{path}"
+        logger.debug(f"[MCP AUTH] Making request to: {url}")
         
         try:
             response = await self._http_client.request(method, url, **kwargs)
+            logger.debug(f"[MCP AUTH] Response status: {response.status_code}")
             
             # HTTP 401の処理
             if response.status_code == 401:
