@@ -31,9 +31,9 @@ def get_tools():
     
     # Artifact生成ツールを追加
     tools.extend([
-        # generate_sample_csv_report,
-        # generate_monthly_performance_csv,
-        # generate_sample_report_artifact,
+        generate_sample_csv_report,
+        generate_monthly_performance_csv,
+        generate_sample_report_artifact,
         authenticate_mcp_server_tool,
         make_mcp_authenticated_request_tool,
         check_mcp_auth_status_tool

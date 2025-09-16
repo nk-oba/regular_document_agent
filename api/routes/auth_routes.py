@@ -192,6 +192,57 @@ async def start_oauth(request: Request):
         logger.error(f"OAuth start error: {e}")
         return handle_auth_error(e, "OAuth start")
 
+@auth_router.get("/google")
+async def google_oauth_redirect(request: Request):
+    """Google OAuth認証へのリダイレクト（フロントエンド互換性のため）"""
+    try:
+        logger.info("Google OAuth redirect endpoint called")
+        
+        # セッションベースの認証状態をチェック
+        session_manager = get_session_auth_manager()
+        user_info = session_manager.get_user_info(request)
+        
+        if user_info:
+            logger.info(f"User already authenticated: {user_info.get('email', 'unknown')}")
+            # 既に認証済みの場合はフロントエンドにリダイレクト
+            return RedirectResponse(url=AppConfig.FRONTEND_REDIRECT_URL, status_code=302)
+        
+        logger.info("Redirecting to Google OAuth")
+        
+        from google_auth_oauthlib.flow import Flow
+        
+        auth_manager = get_auth_manager()
+        if not auth_manager.client_secrets_file:
+            logger.error("OAuth client secrets not configured")
+            return RedirectResponse(
+                url=f"{AppConfig.FRONTEND_REDIRECT_URL}?error=oauth_not_configured", 
+                status_code=302
+            )
+        
+        flow = Flow.from_client_secrets_file(
+            auth_manager.client_secrets_file,
+            scopes=auth_manager.scopes
+        )
+        flow.redirect_uri = AppConfig.GOOGLE_OAUTH_REDIRECT_URI
+        
+        auth_url, _ = flow.authorization_url(
+            prompt='consent',
+            access_type='offline',
+            include_granted_scopes='true'
+        )
+        
+        logger.info(f"Redirecting to OAuth URL: {auth_url[:100]}...")
+        
+        # 直接OAuth URLにリダイレクト
+        return RedirectResponse(url=auth_url, status_code=302)
+        
+    except Exception as e:
+        logger.error(f"Google OAuth redirect error: {e}")
+        return RedirectResponse(
+            url=f"{AppConfig.FRONTEND_REDIRECT_URL}?error=oauth_failed", 
+            status_code=302
+        )
+
 # MCP ADA Authentication Endpoints
 @auth_router.get("/mcp-ada/status")
 async def mcp_ada_auth_status():

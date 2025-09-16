@@ -79,6 +79,7 @@ async def auth_middleware(request: Request, call_next):
     # 認証が不要なパス
     public_paths = [
         "/auth/start",
+        "/auth/google",
         "/auth/callback", 
         "/auth/status",
         "/auth/logout",
