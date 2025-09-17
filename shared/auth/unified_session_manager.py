@@ -8,6 +8,7 @@ import logging
 import hashlib
 import time
 import uuid
+import threading
 from typing import Optional, Dict, List, Tuple
 from google.oauth2.credentials import Credentials
 from fastapi import Request, Response
@@ -24,14 +25,39 @@ class UnifiedSessionManager:
     def __init__(self, adk_session_db_path: str = "sqlite:///./sessions.db"):
         self.adk_session_db_path = adk_session_db_path.replace('sqlite:///', '')
         self.session_timeout = 24 * 60 * 60  # 24時間
-        
+
+        # WALモードを有効化（同時読み取りアクセス許可）
+        self._enable_wal_mode()
+
         # 既存のセッション管理システムとの互換性を保持
         from shared.auth.session_auth import get_session_auth_manager
         from shared.auth.session_sync_manager import get_session_sync_manager
-        
+
         self.login_session_manager = get_session_auth_manager()
         self.sync_manager = get_session_sync_manager()
-    
+
+        # ユーザー別ロック管理
+        self._user_locks = {}
+        self._user_locks_lock = threading.Lock()
+
+    def _enable_wal_mode(self):
+        """SQLiteのWALモードを有効化して同時アクセスを改善"""
+        try:
+            conn = sqlite3.connect(self.adk_session_db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")  # パフォーマンス向上
+            conn.close()
+            logger.info("SQLite WAL mode enabled for concurrent access")
+        except Exception as e:
+            logger.error(f"Failed to enable WAL mode: {e}")
+
+    def _get_user_lock(self, adk_user_id: str) -> threading.Lock:
+        """ユーザー固有のロックを取得（必要に応じて作成）"""
+        with self._user_locks_lock:
+            if adk_user_id not in self._user_locks:
+                self._user_locks[adk_user_id] = threading.Lock()
+            return self._user_locks[adk_user_id]
+
     def _get_stable_adk_user_id(self, email: str) -> str:
         """emailから安定したADKユーザーIDを生成"""
         if not email:
@@ -47,12 +73,12 @@ class UnifiedSessionManager:
         return adk_user_id
     
     def create_unified_session(self, user_info: dict, credentials: Credentials) -> Dict:
-        """統合セッションを作成
-        
+        """統合セッションを作成（スレッドセーフ）
+
         Args:
             user_info: ユーザー情報（email, name等）
             credentials: OAuth認証情報
-            
+
         Returns:
             統合セッション情報
         """
@@ -60,33 +86,41 @@ class UnifiedSessionManager:
             email = user_info.get("email")
             if not email:
                 raise ValueError("User email is required for unified session")
-            
+
             # 1. ADK用の安定したユーザーIDを生成
             adk_user_id = self._get_stable_adk_user_id(email)
-            
-            # 2. 既存のADKセッションを整理
-            self._cleanup_old_adk_sessions(adk_user_id)
-            
-            # 3. ログインセッションを作成
-            login_session_id = self.login_session_manager.create_session(user_info, credentials)
-            
-            # 4. 統合セッション情報を構築
-            unified_session = {
-                "login_session_id": login_session_id,
-                "adk_user_id": adk_user_id,
-                "user_info": user_info,
-                "created_at": time.time(),
-                "status": "active",
-                "adk_sessions_count": 0  # 実際のチャットセッション数は動的
-            }
-            
-            logger.info(f"Created unified session - Login: {login_session_id}, ADK user: {adk_user_id}")
-            return unified_session
-            
+
+            # 2. ユーザー固有のロックを取得して同時操作を防止
+            user_lock = self._get_user_lock(adk_user_id)
+
+            with user_lock:
+                return self._create_session_internal(user_info, credentials, adk_user_id)
+
         except Exception as e:
             logger.error(f"Failed to create unified session: {e}")
             raise
-    
+
+    def _create_session_internal(self, user_info: dict, credentials: Credentials, adk_user_id: str) -> Dict:
+        """内部セッション作成処理（ロック取得済み前提）"""
+        # 1. 既存のADKセッションを整理
+        self._cleanup_old_adk_sessions(adk_user_id)
+
+        # 2. ログインセッションを作成
+        login_session_id = self.login_session_manager.create_session(user_info, credentials)
+
+        # 3. 統合セッション情報を構築
+        unified_session = {
+            "login_session_id": login_session_id,
+            "adk_user_id": adk_user_id,
+            "user_info": user_info,
+            "created_at": time.time(),
+            "status": "active",
+            "adk_sessions_count": 0  # 実際のチャットセッション数は動的
+        }
+
+        logger.info(f"Created unified session - Login: {login_session_id}, ADK user: {adk_user_id}")
+        return unified_session
+
     def _cleanup_old_adk_sessions(self, adk_user_id: str, preserve_chat_history: bool = True):
         """指定ユーザーの古いADKセッションをクリーンアップ（チャット履歴保持オプション付き）"""
         try:
@@ -320,12 +354,15 @@ class UnifiedSessionManager:
         """
         self.login_session_manager.clear_session_cookie(response)
 
-# グローバルインスタンス
+# グローバルインスタンス（スレッドセーフ）
 _unified_session_manager = None
+_singleton_lock = threading.Lock()
 
 def get_unified_session_manager() -> UnifiedSessionManager:
-    """統合セッション管理マネージャーのシングルトンインスタンスを取得"""
+    """統合セッション管理マネージャーのスレッドセーフなシングルトンインスタンスを取得"""
     global _unified_session_manager
     if _unified_session_manager is None:
-        _unified_session_manager = UnifiedSessionManager()
+        with _singleton_lock:
+            if _unified_session_manager is None:
+                _unified_session_manager = UnifiedSessionManager()
     return _unified_session_manager
