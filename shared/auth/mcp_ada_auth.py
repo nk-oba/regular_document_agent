@@ -86,11 +86,19 @@ class MCPADAAuthManager:
     def _save_credentials(self, credentials: dict):
         """認証情報を保存"""
         try:
+            # ディレクトリが存在しない場合は作成
+            os.makedirs(os.path.dirname(self.credentials_file), exist_ok=True)
+            
             with open(self.credentials_file, 'w') as f:
                 json.dump(credentials, f, indent=2)
+            
+            # ファイルのパーミッションを制限 (セキュリティ強化)
+            os.chmod(self.credentials_file, 0o600)
+            
             logging.info(f"MCP ADA credentials saved to {self.credentials_file}")
         except Exception as e:
             logging.error(f"Failed to save MCP ADA credentials: {e}")
+            raise
     
     def _is_token_valid(self, credentials: dict) -> bool:
         """トークンの有効性を確認"""
@@ -169,13 +177,24 @@ class MCPADAAuthManager:
             credentials = self._exchange_code_for_token(auth_code, code_verifier)
             
             if credentials:
-                self._save_credentials(credentials)
+                # 認証情報を保存
+                try:
+                    self._save_credentials(credentials)
+                    logging.info("MCP ADA credentials successfully saved")
+                except Exception as save_error:
+                    logging.error(f"Failed to save credentials: {save_error}")
+                    # 認証は成功したが保存に失敗した場合でも、credentialsを返す
+                    # これにより少なくとも現在のセッションでは使用可能
+                
                 # 一時保存データをクリア
                 if hasattr(self, '_temp_pkce'):
                     delattr(self, '_temp_pkce')
                 
-            return credentials
-            
+                return credentials
+            else:
+                logging.error("Failed to obtain credentials from auth code")
+                return None
+                
         except Exception as e:
             logging.error(f"Failed to process MCP ADA auth code: {e}")
             return None
@@ -243,10 +262,13 @@ class MCPADAAuthManager:
             if response.status_code == 200:
                 token_response = response.json()
                 
-                # expires_at を計算して追加
+                # expires_atを計算して追加
                 if 'expires_in' in token_response:
                     import time
                     token_response['expires_at'] = time.time() + token_response['expires_in']
+                
+                # 取得時刻を記録（デバッグ用）
+                token_response['obtained_at'] = time.time()
                 
                 logging.info("Successfully obtained MCP ADA access token")
                 return token_response
@@ -316,11 +338,19 @@ class MCPADAAuthManager:
     def _save_client_credentials(self, client_info: dict):
         """クライアント認証情報を保存"""
         try:
+            # ディレクトリが存在しない場合は作成
+            os.makedirs(os.path.dirname(self.client_credentials_file), exist_ok=True)
+            
             with open(self.client_credentials_file, 'w') as f:
                 json.dump(client_info, f, indent=2)
+            
+            # ファイルのパーミッションを制限 (セキュリティ強化)
+            os.chmod(self.client_credentials_file, 0o600)
+            
             logging.info(f"Client credentials saved to {self.client_credentials_file}")
         except Exception as e:
             logging.error(f"Failed to save client credentials: {e}")
+            raise
     
     def _register_client(self) -> bool:
         """動的クライアント登録を実行"""

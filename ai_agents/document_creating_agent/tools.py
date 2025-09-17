@@ -28,40 +28,64 @@ def get_google_access_token():
 def get_tools():
     """MCPツールを安全に読み込み（遅延初期化）"""
     tools = []
-    
+
     # Artifact生成ツールを追加
     tools.extend([
         generate_sample_csv_report,
-        generate_monthly_performance_csv,
-        generate_sample_report_artifact,
-        authenticate_mcp_server_tool,
-        make_mcp_authenticated_request_tool,
-        check_mcp_auth_status_tool
+        # authenticate_mcp_server_tool,
+        # make_mcp_authenticated_request_tool,
+        # check_mcp_auth_status_tool
     ])
+
     
-    # list_tools関数をインポートして追加
+    # TODO 動的認証に組み替える
+    mcp_toolset = None
     try:
-        from list_tools import list_tools
-        tools.append(list_tools)
-    except ImportError as e:
-        logging.warning(f"Failed to import list_tools: {e}")
+        from shared.auth.mcp_ada_auth import get_mcp_ada_access_token
+        access_token = get_mcp_ada_access_token(user_id="usr0302483@login.gmo-ap.jp")
+        
+        if access_token:
+            mcp_toolset = MCPToolset(
+                connection_params=StreamableHTTPConnectionParams(
+                    url="https://mcp-server-ad-analyzer.adt-c1a.workers.dev/mcp",
+                    headers={"Authorization": f"Bearer {access_token}"}
+                )
+            )
+            logging.info("MCP ADA toolset initialized with valid access token")
+        else:
+            logging.warning("No valid MCP ADA access token available. MCP tools will not be initialized.")
+            
+    except Exception as e:
+        logging.error(f"Failed to initialize MCP ADA toolset: {e}")
+
+    # MCP ADA toolsetをtoolsに追加（認証済みの場合のみ）
+    if mcp_toolset:
+        tools.append(mcp_toolset)
+        logging.info("MCP ADA toolset added to tools")
+
+    # # list_tools関数をインポートして追加
+    # try:
+    #     from list_tools import list_tools
+    #     tools.append(list_tools)
+    # except ImportError as e:
+    #     logging.warning(f"Failed to import list_tools: {e}")
     
     # MCPツールの初期化をスキップしてサーバー起動を優先
     logging.info("MCP tools will be initialized on first use (lazy loading)")
-    logging.info(f"Added {len(tools)} tools (including {3} MCP auth tools)")
+    logging.info(f"Added {len(tools)} tools (including MCP toolset if authenticated)")
     
-    # MCP ADAが認証済みの場合、サーバーから実際のツールを動的に取得
-    try:
-        from mcp_dynamic_tools import create_mcp_ada_dynamic_tools
-        dynamic_mcp_tools = create_mcp_ada_dynamic_tools()
+    # # MCP ADAが認証済みの場合、サーバーから実際のツールを動的に取得
+    # try:
+    #     from mcp_dynamic_tools import create_mcp_ada_dynamic_tools
+    #     dynamic_mcp_tools = create_mcp_ada_dynamic_tools()
         
-        if dynamic_mcp_tools:
-            tools.extend(dynamic_mcp_tools)
-            logging.info(f"Added {len(dynamic_mcp_tools)} dynamic MCP ADA tools to available tools")
-        else:
-            logging.info("No MCP ADA tools available or not authenticated")
-    except Exception as e:
-        logging.warning(f"Failed to load dynamic MCP ADA tools: {e}")
+    #     if dynamic_mcp_tools:
+    #         tools.extend(dynamic_mcp_tools)
+    #         logging.info(f"Added {len(dynamic_mcp_tools)} dynamic MCP ADA tools to available tools")
+    #     else:
+    #         logging.info("No MCP ADA tools available or not authenticated")
+    # except Exception as e:
+    #     logging.warning(f"Failed to load dynamic MCP ADA tools: {e}")
     
     return tools
 
@@ -210,300 +234,6 @@ async def generate_sample_csv_report(tool_context):
         traceback.print_exc()
         return error_msg
 
-
-async def generate_monthly_performance_csv(tool_context, year: Optional[int] = None, month: Optional[int] = None):
-    """
-    月次パフォーマンスレポートのCSVを生成
-    
-    Args:
-        tool_context: ADK tool context
-        year: レポート対象年 (デフォルト: 現在年)
-        month: レポート対象月 (デフォルト: 先月)
-        
-    Returns:
-        str: 生成されたCSVファイルの情報
-    """
-    try:
-        # デフォルト値の設定
-        if not year or not month:
-            now = datetime.now()
-            if not year:
-                year = now.year
-            if not month:
-                # 先月を取得
-                first_day_this_month = now.replace(day=1)
-                last_month = first_day_this_month - timedelta(days=1)
-                month = last_month.month
-                if month == 12:
-                    year -= 1
-        
-        # 月次データの生成（30日分）
-        headers = ["Date", "Campaign", "Device", "Impressions", "Clicks", "CTR (%)", "Cost (JPY)", "Conversions", "CPA (JPY)"]
-        data = [headers]
-        
-        campaigns = ["ブランド認知", "商品販売", "アプリダウンロード", "リードジェネレーション"]
-        devices = ["Desktop", "Mobile", "Tablet"]
-        
-        import random
-        random.seed(42)  # 再現可能な結果のため
-        
-        for day in range(1, 31):
-            for campaign in campaigns[:2]:  # 主要キャンペーン2つに絞る
-                device = random.choice(devices)
-                impressions = random.randint(5000, 25000)
-                clicks = random.randint(int(impressions * 0.01), int(impressions * 0.05))
-                ctr = round((clicks / impressions) * 100, 2)
-                cost = random.randint(10000, 50000)
-                conversions = random.randint(5, 50)
-                cpa = round(cost / conversions, 0) if conversions > 0 else 0
-                
-                date_str = f"{year:04d}-{month:02d}-{day:02d}"
-                row = [date_str, campaign, device, impressions, clicks, ctr, cost, conversions, int(cpa)]
-                data.append(row)
-        
-        # CSVデータをバイト形式で生成
-        csv_buffer = io.StringIO()
-        csv_writer = csv.writer(csv_buffer)
-        csv_writer.writerows(data)
-        csv_bytes = csv_buffer.getvalue().encode('utf-8-sig')
-        
-        # ADK Artifactとして作成
-        csv_artifact = types.Part.from_bytes(
-            data=csv_bytes,
-            mime_type="text/csv"
-        )
-        
-        # ファイル名
-        filename = f"monthly_performance_{year:04d}{month:02d}.csv"
-        
-        # 新しいヘルパー関数を使用してArtifactを保存
-        from shared.utils.artifact_user_helper import save_artifact_with_proper_user_id, format_download_section
-        
-        # Artifactを適切なユーザー管理で保存
-        save_result = await save_artifact_with_proper_user_id(
-            tool_context=tool_context,
-            filename=filename,
-            artifact=csv_artifact,
-            return_detailed_info=True
-        )
-        
-        if save_result['success']:
-            logging.info(f"Monthly performance CSV generated: {filename} (version {save_result['version']})")
-            # フォーマット済みダウンロードセクションを取得
-            download_section = format_download_section(save_result)
-            version = save_result['version']
-        else:
-            logging.error(f"Failed to save monthly CSV artifact: {save_result.get('error')}")
-            download_section = f"❌ ファイル保存エラー: {save_result.get('error', 'Unknown error')}"
-            version = 0
-        
-        return f"""✅ 月次パフォーマンスレポートが生成されました！
-
-📅 **対象期間**: {year}年{month}月
-📄 **ファイル名**: `{filename}`
-📊 **データ件数**: {len(data)-1}件（ヘッダー除く）
-🔢 **バージョン**: {version}
-🕐 **生成日時**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-{download_section}
-
-📈 **レポート内容**:
-- 📊 日別キャンペーンパフォーマンス
-- 📱 デバイス別分析（Desktop/Mobile/Tablet）
-- 🎯 コンバージョン・CPA追跡
-- 📋 主要指標の詳細データ
-
-💼 **活用方法**:
-- Excelでピボットテーブル分析
-- Google Sheetsでグラフ作成
-- BIツール（Tableau、Power BI）でダッシュボード構築
-- Python/Rでの統計分析
-
-🔍 月次トレンド分析やROI最適化にご活用ください！
-"""
-        
-    except Exception as e:
-        error_msg = f"月次レポート生成中にエラーが発生しました: {str(e)}"
-        logging.error(error_msg)
-        return error_msg
-
-
-async def generate_sample_report_artifact(tool_context, format_type: str = "json"):
-    """
-    サンプルレポートを任意の形式で生成（汎用Artifactデモ）
-    
-    Args:
-        tool_context: ADK tool context
-        format_type: 生成するファイル形式 ("json", "txt", "html")
-        
-    Returns:
-        str: 生成されたファイルの情報
-    """
-    try:
-        # サンプルデータ
-        report_data = {
-            "report_title": "広告キャンペーン分析レポート",
-            "generated_at": datetime.now().isoformat(),
-            "summary": {
-                "total_campaigns": 5,
-                "total_impressions": 750000,
-                "total_clicks": 18500,
-                "average_ctr": 2.47,
-                "total_cost": 275000
-            },
-            "campaigns": [
-                {"name": "夏セールキャンペーン", "impressions": 125000, "clicks": 3200, "cost": 48000},
-                {"name": "新商品発売記念", "impressions": 89500, "clicks": 2150, "cost": 32250},
-                {"name": "バックトゥスクール", "impressions": 156300, "clicks": 4890, "cost": 73350},
-                {"name": "週末限定セール", "impressions": 203100, "clicks": 6093, "cost": 91395},
-                {"name": "アウトレットクリアランス", "impressions": 78900, "clicks": 1578, "cost": 23670}
-            ]
-        }
-        
-        # 形式に応じてデータを変換
-        if format_type.lower() == "json":
-            import json
-            file_data = json.dumps(report_data, ensure_ascii=False, indent=2).encode('utf-8')
-            filename = f"campaign_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            mime_type = "application/json"
-            
-        elif format_type.lower() == "txt":
-            text_content = f"""広告キャンペーン分析レポート
-生成日時: {report_data['generated_at']}
-
-サマリー:
-- 総キャンペーン数: {report_data['summary']['total_campaigns']}
-- 総インプレッション数: {report_data['summary']['total_impressions']:,}
-- 総クリック数: {report_data['summary']['total_clicks']:,}
-- 平均CTR: {report_data['summary']['average_ctr']}%
-- 総コスト: {report_data['summary']['total_cost']:,}円
-
-キャンペーン詳細:
-"""
-            for campaign in report_data['campaigns']:
-                text_content += f"- {campaign['name']}: {campaign['impressions']:,}imp, {campaign['clicks']:,}click, {campaign['cost']:,}円\n"
-            
-            file_data = text_content.encode('utf-8')
-            filename = f"campaign_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            mime_type = "text/plain"
-            
-        elif format_type.lower() == "html":
-            html_content = f"""<!DOCTYPE html>
-<html lang="ja">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>広告キャンペーン分析レポート</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; }}
-        .summary {{ background-color: #f0f8ff; padding: 15px; border-radius: 5px; margin: 20px 0; }}
-        table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
-        th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
-        th {{ background-color: #4CAF50; color: white; }}
-        tr:nth-child(even) {{ background-color: #f2f2f2; }}
-    </style>
-</head>
-<body>
-    <h1>広告キャンペーン分析レポート</h1>
-    <p><strong>生成日時:</strong> {report_data['generated_at']}</p>
-    
-    <div class="summary">
-        <h2>サマリー</h2>
-        <ul>
-            <li>総キャンペーン数: {report_data['summary']['total_campaigns']}</li>
-            <li>総インプレッション数: {report_data['summary']['total_impressions']:,}</li>
-            <li>総クリック数: {report_data['summary']['total_clicks']:,}</li>
-            <li>平均CTR: {report_data['summary']['average_ctr']}%</li>
-            <li>総コスト: {report_data['summary']['total_cost']:,}円</li>
-        </ul>
-    </div>
-    
-    <h2>キャンペーン詳細</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>キャンペーン名</th>
-                <th>インプレッション数</th>
-                <th>クリック数</th>
-                <th>コスト</th>
-            </tr>
-        </thead>
-        <tbody>"""
-            for campaign in report_data['campaigns']:
-                html_content += f"""
-            <tr>
-                <td>{campaign['name']}</td>
-                <td>{campaign['impressions']:,}</td>
-                <td>{campaign['clicks']:,}</td>
-                <td>{campaign['cost']:,}円</td>
-            </tr>"""
-            
-            html_content += """
-        </tbody>
-    </table>
-</body>
-</html>"""
-            file_data = html_content.encode('utf-8')
-            filename = f"campaign_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-            mime_type = "text/html"
-            
-        else:
-            return f"❌ サポートされていないファイル形式: {format_type}\nサポート形式: json, txt, html"
-        
-        # ADK Artifactとして作成
-        artifact = types.Part.from_bytes(
-            data=file_data,
-            mime_type=mime_type
-        )
-        
-        # 新しいヘルパー関数を使用してArtifactを保存
-        from shared.utils.artifact_user_helper import save_artifact_with_proper_user_id, format_download_section
-        
-        # Artifactを適切なユーザー管理で保存
-        save_result = await save_artifact_with_proper_user_id(
-            tool_context=tool_context,
-            filename=filename,
-            artifact=artifact,
-            return_detailed_info=True
-        )
-        
-        if save_result['success']:
-            logging.info(f"Generic artifact generated: {filename} (version {save_result['version']}, format: {format_type})")
-            # フォーマット済みダウンロードセクションを取得
-            download_section = format_download_section(save_result)
-            version = save_result['version']
-        else:
-            logging.error(f"Failed to save generic artifact: {save_result.get('error')}")
-            download_section = f"❌ ファイル保存エラー: {save_result.get('error', 'Unknown error')}"
-            version = 0
-        
-        return f"""✅ {format_type.upper()}形式のレポートが生成されました！
-
-📄 **ファイル名**: `{filename}`
-📊 **形式**: {format_type.upper()}
-🔢 **バージョン**: {version}
-📦 **MIMEタイプ**: {mime_type}
-🕐 **生成日時**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-{download_section}
-
-📈 **レポート内容**:
-- 📊 キャンペーン分析データ
-- 📋 サマリー統計情報
-- 🎯 個別キャンペーン詳細
-
-💼 **活用方法**:
-- {format_type.upper()}ファイルとして保存・共有
-- 他のツールで後処理
-- アーカイブとして保管
-
-🔧 この機能は汎用Artifactダウンロード機能のデモンストレーションです！
-"""
-        
-    except Exception as e:
-        error_msg = f"{format_type}レポート生成中にエラーが発生しました: {str(e)}"
-        logging.error(error_msg)
-        return error_msg
 
 
 # ==============================================================================
