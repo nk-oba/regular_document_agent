@@ -5,9 +5,14 @@ import csv
 import io
 from datetime import datetime, timedelta
 from typing import Optional, Union
+from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioServerParameters
 from google.adk.tools.mcp_tool import StreamableHTTPConnectionParams
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
+
+from .sub_agents.slide_agent import slide_agent
+from .sub_agents.playwright_agent import playwright_agent
 
 # パスを追加してauth モジュールをインポート可能にする
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -31,7 +36,13 @@ def get_tools():
 
     # Artifact生成ツールを追加
     tools.extend([
-        generate_sample_csv_report,
+        # call_playwright_agent,
+
+        # make_mcp_authenticated_request_tool,
+        # check_mcp_auth_status_tool
+
+        # generate_sample_csv_report,
+
         # authenticate_mcp_server_tool,
         # make_mcp_authenticated_request_tool,
         # check_mcp_auth_status_tool
@@ -432,3 +443,73 @@ authenticate_mcp_server_tool("{server_url}", "{user_id}")
         import traceback
         traceback.print_exc()
         return error_msg
+
+
+
+## ==============================================================================
+
+# 構成検討エージェント呼び出し
+async def call_playwright_agent(
+    ad_report_data: dict,
+    tool_context: ToolContext,
+):
+    """
+    Tool to call playwright agent.
+
+    This tool creates and returns an outline for document structure.    
+    """
+
+    if ad_report_data == "N/A":
+        return tool_context.state["playwright_agent_output"]
+
+    agent_tool = AgentTool(agent=playwright_agent)
+
+    ad_with_data = f"""
+    The JSON data to be used for structure consideration is as follows:
+
+    {ad_report_data}
+    """
+
+    playwright_agent_output = await agent_tool.run_async(
+        args={
+            "request": ad_with_data,
+        },
+        tool_context=tool_context,
+    )
+    tool_context.state["playwright_agent_output"] = playwright_agent_output
+    return playwright_agent_output
+
+
+# 資料作成エージェント呼び出し
+async def call_slide_agent(
+    outline: str,
+    ad_report_data: dict,
+    tool_context: ToolContext,
+):
+    """Tool to call slide agent."""
+
+    if ad_report_data == "N/A":
+        return tool_context.state["slide_agent_output"]
+
+    if outline == "N/A":
+        return tool_context.state["slide_agent_output"]
+
+    outline_with_data = f"""
+    Please create a pptx presentation file from the following markdown text and JSON data.
+
+    The structure of the presentation to be created is as follows:
+    {outline}
+
+    The advertising data to be embedded in the presentation is as follows:
+    {ad_report_data}
+    """
+
+    agent_tool = AgentTool(agent=slide_agent)
+    slide_agent_output = await agent_tool.run_async(
+        args={
+            "request": outline_with_data,
+        },
+        tool_context=tool_context,
+    )
+    tool_context.state["slide_agent_output"] = slide_agent_output
+    return slide_agent_output

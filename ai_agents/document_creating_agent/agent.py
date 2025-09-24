@@ -20,13 +20,11 @@ STATE_PLAYWRIGHT_DOC = "current_doc"
 
 load_dotenv()
 
-# MCP ADAデバッグログを有効化
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# MCP関連のログを特に詳細に設定
 logging.getLogger('mcp_client').setLevel(logging.DEBUG)
 logging.getLogger('google.adk').setLevel(logging.DEBUG)
 
@@ -58,11 +56,7 @@ sub_agents = []
 # except Exception as e:
 #     logging.error(f"Failed to load slide_agent: {str(e)}")
 
-# モデル名を安全に取得
-model = os.getenv("ROOT_AGENT_MODEL")
-if not model:
-    logging.warning("ROOT_AGENT_MODEL not found, using default model")
-    model = "gemini-1.5-flash"
+model = os.getenv("ROOT_AGENT_MODEL", "gemini-2.5-flash")
 
 ad_agency = LlmAgent(
     model=model,
@@ -70,7 +64,7 @@ ad_agency = LlmAgent(
     description=(
         "広告運用に関する報告資料を作成するエージェント"
     ),
-    instruction=prompt.AD_REPORT_PROMPT,
+    # instruction=prompt.AD_REPORT_PROMPT,
     sub_agents=sub_agents,
     tools=tools,
     generate_content_config=types.GenerateContentConfig(temperature=0.01),
