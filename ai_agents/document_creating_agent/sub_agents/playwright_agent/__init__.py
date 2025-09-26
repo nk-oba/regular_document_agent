@@ -1,3 +1,3 @@
-"""playwright_agent: Playwright Agent creates the structure of the ad report."""
+from .agent import root_agent
 
-from .agent import playwright_agent
+__all__ = ["root_agent"]

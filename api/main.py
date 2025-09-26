@@ -123,7 +123,16 @@ except Exception as e:
     raise
 
 
-# 認証ミドルウェアを追加（CORSより前に）
+# CORS設定を最初に適用（認証ミドルウェアより前に）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=AppConfig.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 認証ミドルウェアを追加（CORSの後に）
 app.middleware("http")(auth_middleware)
 
 # MCP ADA認証コールバック用のHTMLエンドポイント
@@ -139,14 +148,7 @@ async def mcp_ada_callback_html():
 # 静的ファイルの設定（その他の静的ファイル用）
 app.mount("/static", StaticFiles(directory="."), name="static")
 
-# CORS設定を最後に適用してget_fast_api_appの設定を上書き
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=AppConfig.ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS設定は上記で適用済み
 
 logger.info(f"CORS allowed origins: {AppConfig.ALLOWED_ORIGINS}")
 

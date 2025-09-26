@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 # Create authentication router
 auth_router = APIRouter(prefix="/auth", tags=["authentication"])
 
+@auth_router.options("/{path:path}")
+async def options_handler():
+    """Handle CORS preflight requests for auth routes"""
+    return {"message": "OK"}
+
 @auth_router.get("/callback")
 async def oauth_callback(code: Optional[str] = None, error: Optional[str] = None):
     """Google OAuth2.0認証コールバック"""

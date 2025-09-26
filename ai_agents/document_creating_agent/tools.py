@@ -11,23 +11,11 @@ from google.adk.tools.mcp_tool import StreamableHTTPConnectionParams
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
-from .sub_agents.slide_agent import slide_agent
-from .sub_agents.playwright_agent import playwright_agent
+from .sub_agents import slide_agent, playwright_agent, ds_agent
 
 # パスを追加してauth モジュールをインポート可能にする
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-
-def get_google_access_token():
-    """Google認証トークンを安全に取得"""
-    try:
-        from shared.auth.google_auth import get_google_access_token as _get_token
-        return _get_token()
-    except ImportError as e:
-        logging.error(f"Google auth module not available: {e}")
-        return None
-    except Exception as e:
-        logging.error(f"Failed to get Google access token: {e}")
-        return None
+from shared.auth.google_auth import get_google_access_token
 
 
 def get_tools():
@@ -513,3 +501,399 @@ async def call_slide_agent(
     )
     tool_context.state["slide_agent_output"] = slide_agent_output
     return slide_agent_output
+
+# 分析エージェント呼び出し
+async def call_ds_agent(
+    question: str,
+    tool_context: ToolContext,
+):
+    """Tool to call data science (nl2py) agent."""
+
+    if question == "N/A":
+        return tool_context.state.get("db_agent_output", "No previous data science agent output available")
+
+    input_data = tool_context.state.get("csv_report_output")
+    if input_data is None:
+        from .tools import execute_get_ad_report
+        ad_report_result = await execute_get_ad_report(tool_context)
+        if ad_report_result.get('status') == 'SUCCESS':
+            input_data = ad_report_result.get('data', {})
+            tool_context.state["csv_report_output"] = input_data
+        else:
+            return {"status": "ERROR", "error": "Could not retrieve ad report data for analysis"}
+
+    question_with_data = f"""
+  Question to answer: {question}
+
+  Actual data to analyze prevoius quesiton is already in the following:
+  {input_data}
+
+  """
+
+    agent_tool = AgentTool(agent=ds_agent)
+
+    ds_agent_output = await agent_tool.run_async(
+        args={"request": question_with_data}, tool_context=tool_context
+    )
+    tool_context.state["ds_agent_output"] = ds_agent_output
+    return ds_agent_output
+
+async def execute_get_ad_report(tool_context=None):
+    """
+    サンプル広告レポート数値のJSONデータを返却するツール
+
+    Args:
+        tool_context: ADK tool context (optional)
+
+    Returns:
+        dict: サンプル広告レポートデータ
+    """
+    try:
+        sample_ad_report = {
+            "status": "SUCCESS",
+            "data": {
+            "report_metadata": {
+                "report_id": "RPT-2024-0824-001",
+                "report_name": "月次広告運用レポート",
+                "period": {
+                    "start_date": "2024-08-01",
+                    "end_date": "2024-08-31"
+                },
+                "generated_at": "2024-09-01T10:00:00+09:00",
+                "currency": "JPY"
+            },
+            "summary": {
+                "total_impressions": 1542800,
+                "total_clicks": 38570,
+                "total_cost": 578550,
+                "average_ctr": 2.50,
+                "average_cpc": 15,
+                "average_cpm": 375,
+                "conversion_count": 856,
+                "conversion_rate": 2.22,
+                "cost_per_conversion": 676
+            },
+            "campaigns": [
+                {
+                    "campaign_id": "12345",
+                    "campaign_name": "夏セールキャンペーン",
+                    "campaign_type": "検索広告",
+                    "status": "active",
+                    "start_date": "2024-08-01",
+                    "end_date": "2024-08-15",
+                    "metrics": {
+                        "impressions": 460000,
+                        "clicks": 12000,
+                        "cost": 180000,
+                        "ctr": 2.61,
+                        "cpc": 15,
+                        "cpm": 391,
+                        "conversions": 267,
+                        "conversion_rate": 2.23,
+                        "cost_per_conversion": 674
+                    },
+                    "ad_groups": [
+                        {
+                            "ad_group_id": "AG101",
+                            "ad_group_name": "夏セール_検索_メイン",
+                            "impressions": 280000,
+                            "clicks": 7200,
+                            "cost": 108000,
+                            "ctr": 2.57,
+                            "cpc": 15,
+                            "conversions": 160,
+                            "conversion_rate": 2.22,
+                            "daily_data": [
+                                {"date": "2024-08-01", "impressions": 18666, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 11},
+                                {"date": "2024-08-02", "impressions": 18667, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 10},
+                                {"date": "2024-08-03", "impressions": 18667, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 12},
+                                {"date": "2024-08-04", "impressions": 18666, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 11},
+                                {"date": "2024-08-05", "impressions": 18667, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 10},
+                                {"date": "2024-08-06", "impressions": 18667, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 11},
+                                {"date": "2024-08-07", "impressions": 18666, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 12},
+                                {"date": "2024-08-08", "impressions": 18667, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 10},
+                                {"date": "2024-08-09", "impressions": 18667, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 11},
+                                {"date": "2024-08-10", "impressions": 18666, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 10},
+                                {"date": "2024-08-11", "impressions": 18667, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 12},
+                                {"date": "2024-08-12", "impressions": 18667, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 11},
+                                {"date": "2024-08-13", "impressions": 18666, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 10},
+                                {"date": "2024-08-14", "impressions": 18667, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 11},
+                                {"date": "2024-08-15", "impressions": 18666, "clicks": 480, "cost": 7200, "ctr": 2.57, "cpc": 15, "conversions": 10}
+                            ]
+                        },
+                        {
+                            "ad_group_id": "AG102",
+                            "ad_group_name": "夏セール_検索_サブ",
+                            "impressions": 180000,
+                            "clicks": 4800,
+                            "cost": 72000,
+                            "ctr": 2.67,
+                            "cpc": 15,
+                            "conversions": 107,
+                            "conversion_rate": 2.23,
+                            "daily_data": [
+                                {"date": "2024-08-01", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-02", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 8},
+                                {"date": "2024-08-03", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-04", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-05", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 8},
+                                {"date": "2024-08-06", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-07", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 8},
+                                {"date": "2024-08-08", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-09", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-10", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 8},
+                                {"date": "2024-08-11", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-12", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 8},
+                                {"date": "2024-08-13", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-14", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-15", "impressions": 12000, "clicks": 320, "cost": 4800, "ctr": 2.67, "cpc": 15, "conversions": 8}
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "campaign_id": "12346",
+                    "campaign_name": "新商品発売記念",
+                    "campaign_type": "ディスプレイ広告",
+                    "status": "active",
+                    "start_date": "2024-08-16",
+                    "end_date": "2024-08-31",
+                    "metrics": {
+                        "impressions": 512000,
+                        "clicks": 12000,
+                        "cost": 180000,
+                        "ctr": 2.34,
+                        "cpc": 15,
+                        "cpm": 352,
+                        "conversions": 264,
+                        "conversion_rate": 2.20,
+                        "cost_per_conversion": 682
+                    },
+                    "ad_groups": [
+                        {
+                            "ad_group_id": "AG201",
+                            "ad_group_name": "新商品バナー_メイン",
+                            "impressions": 320000,
+                            "clicks": 7680,
+                            "cost": 115200,
+                            "ctr": 2.40,
+                            "cpc": 15,
+                            "conversions": 169,
+                            "conversion_rate": 2.20,
+                            "daily_data": [
+                                {"date": "2024-08-16", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 11},
+                                {"date": "2024-08-17", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 10},
+                                {"date": "2024-08-18", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 12},
+                                {"date": "2024-08-19", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 11},
+                                {"date": "2024-08-20", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 10},
+                                {"date": "2024-08-21", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 11},
+                                {"date": "2024-08-22", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 12},
+                                {"date": "2024-08-23", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 10},
+                                {"date": "2024-08-24", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 11},
+                                {"date": "2024-08-25", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 10},
+                                {"date": "2024-08-26", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 12},
+                                {"date": "2024-08-27", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 11},
+                                {"date": "2024-08-28", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 10},
+                                {"date": "2024-08-29", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 11},
+                                {"date": "2024-08-30", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 10},
+                                {"date": "2024-08-31", "impressions": 20000, "clicks": 480, "cost": 7200, "ctr": 2.40, "cpc": 15, "conversions": 9}
+                            ]
+                        },
+                        {
+                            "ad_group_id": "AG202",
+                            "ad_group_name": "新商品バナー_サブ",
+                            "impressions": 192000,
+                            "clicks": 4320,
+                            "cost": 64800,
+                            "ctr": 2.25,
+                            "cpc": 15,
+                            "conversions": 95,
+                            "conversion_rate": 2.20,
+                            "daily_data": [
+                                {"date": "2024-08-16", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-17", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-18", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-19", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-20", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-21", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-22", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-23", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-24", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-25", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-26", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-27", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-28", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-29", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-30", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-31", "impressions": 12000, "clicks": 270, "cost": 4050, "ctr": 2.25, "cpc": 15, "conversions": 5}
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "campaign_id": "12347",
+                    "campaign_name": "バックトゥスクール",
+                    "campaign_type": "動画広告",
+                    "status": "active",
+                    "start_date": "2024-08-01",
+                    "end_date": "2024-08-31",
+                    "metrics": {
+                        "impressions": 570800,
+                        "clicks": 14570,
+                        "cost": 218550,
+                        "ctr": 2.55,
+                        "cpc": 15,
+                        "cpm": 383,
+                        "conversions": 325,
+                        "conversion_rate": 2.23,
+                        "cost_per_conversion": 673
+                    },
+                    "ad_groups": [
+                        {
+                            "ad_group_id": "AG301",
+                            "ad_group_name": "バックトゥスクール_動画_15秒",
+                            "impressions": 342480,
+                            "clicks": 8742,
+                            "cost": 131130,
+                            "ctr": 2.55,
+                            "cpc": 15,
+                            "conversions": 195,
+                            "conversion_rate": 2.23,
+                            "daily_data": [
+                                {"date": "2024-08-01", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-02", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-03", "impressions": 11049, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-04", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-05", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-06", "impressions": 11049, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-07", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-08", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-09", "impressions": 11049, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-10", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-11", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-12", "impressions": 11049, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-13", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-14", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-15", "impressions": 11049, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-16", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-17", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-18", "impressions": 11049, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-19", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-20", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-21", "impressions": 11049, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-22", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-23", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-24", "impressions": 11049, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-25", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-26", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-27", "impressions": 11049, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-28", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-29", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6},
+                                {"date": "2024-08-30", "impressions": 11049, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 7},
+                                {"date": "2024-08-31", "impressions": 11048, "clicks": 282, "cost": 4230, "ctr": 2.55, "cpc": 15, "conversions": 6}
+                            ]
+                        },
+                        {
+                            "ad_group_id": "AG302",
+                            "ad_group_name": "バックトゥスクール_動画_30秒",
+                            "impressions": 228320,
+                            "clicks": 5828,
+                            "cost": 87420,
+                            "ctr": 2.55,
+                            "cpc": 15,
+                            "conversions": 130,
+                            "conversion_rate": 2.23,
+                            "daily_data": [
+                                {"date": "2024-08-01", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-02", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-03", "impressions": 7366, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-04", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-05", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-06", "impressions": 7366, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-07", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-08", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-09", "impressions": 7366, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-10", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-11", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-12", "impressions": 7366, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-13", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-14", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-15", "impressions": 7366, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-16", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-17", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-18", "impressions": 7366, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-19", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-20", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-21", "impressions": 7366, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-22", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-23", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-24", "impressions": 7366, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-25", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-26", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-27", "impressions": 7366, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-28", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-29", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4},
+                                {"date": "2024-08-30", "impressions": 7366, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 5},
+                                {"date": "2024-08-31", "impressions": 7365, "clicks": 188, "cost": 2820, "ctr": 2.55, "cpc": 15, "conversions": 4}
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "daily_summary": [
+                {"date": "2024-08-01", "total_impressions": 49713, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 28, "conversion_rate": 2.25},
+                {"date": "2024-08-02", "total_impressions": 49713, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 30, "conversion_rate": 2.41},
+                {"date": "2024-08-03", "total_impressions": 49715, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 29, "conversion_rate": 2.34},
+                {"date": "2024-08-04", "total_impressions": 49713, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 26, "conversion_rate": 2.09},
+                {"date": "2024-08-05", "total_impressions": 49713, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 30, "conversion_rate": 2.41},
+                {"date": "2024-08-06", "total_impressions": 49715, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 28, "conversion_rate": 2.25},
+                {"date": "2024-08-07", "total_impressions": 49713, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 32, "conversion_rate": 2.58},
+                {"date": "2024-08-08", "total_impressions": 49713, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 27, "conversion_rate": 2.17},
+                {"date": "2024-08-09", "total_impressions": 49715, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 28, "conversion_rate": 2.25},
+                {"date": "2024-08-10", "total_impressions": 49713, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 30, "conversion_rate": 2.41},
+                {"date": "2024-08-11", "total_impressions": 49713, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 29, "conversion_rate": 2.34},
+                {"date": "2024-08-12", "total_impressions": 49715, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 31, "conversion_rate": 2.50},
+                {"date": "2024-08-13", "total_impressions": 49713, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 27, "conversion_rate": 2.17},
+                {"date": "2024-08-14", "total_impressions": 49713, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 28, "conversion_rate": 2.25},
+                {"date": "2024-08-15", "total_impressions": 49715, "total_clicks": 1242, "total_cost": 18630, "average_ctr": 2.50, "average_cpc": 15, "conversion_count": 30, "conversion_rate": 2.41},
+                {"date": "2024-08-16", "total_impressions": 51413, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 27, "conversion_rate": 2.21},
+                {"date": "2024-08-17", "total_impressions": 51413, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 27, "conversion_rate": 2.21},
+                {"date": "2024-08-18", "total_impressions": 51415, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 29, "conversion_rate": 2.38},
+                {"date": "2024-08-19", "total_impressions": 51413, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 27, "conversion_rate": 2.21},
+                {"date": "2024-08-20", "total_impressions": 51413, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 27, "conversion_rate": 2.21},
+                {"date": "2024-08-21", "total_impressions": 51415, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 27, "conversion_rate": 2.21},
+                {"date": "2024-08-22", "total_impressions": 51413, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 29, "conversion_rate": 2.38},
+                {"date": "2024-08-23", "total_impressions": 51413, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 25, "conversion_rate": 2.05},
+                {"date": "2024-08-24", "total_impressions": 51415, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 27, "conversion_rate": 2.21},
+                {"date": "2024-08-25", "total_impressions": 51413, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 27, "conversion_rate": 2.21},
+                {"date": "2024-08-26", "total_impressions": 51413, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 29, "conversion_rate": 2.38},
+                {"date": "2024-08-27", "total_impressions": 51415, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 29, "conversion_rate": 2.38},
+                {"date": "2024-08-28", "total_impressions": 51413, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 25, "conversion_rate": 2.05},
+                {"date": "2024-08-29", "total_impressions": 51413, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 27, "conversion_rate": 2.21},
+                {"date": "2024-08-30", "total_impressions": 51415, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 27, "conversion_rate": 2.21},
+                {"date": "2024-08-31", "total_impressions": 51413, "total_clicks": 1220, "total_cost": 18300, "average_ctr": 2.37, "average_cpc": 15, "conversion_count": 24, "conversion_rate": 1.97}
+            ],
+            "recommendations": [
+                {
+                    "type": "campaign_optimization",
+                    "priority": "high",
+                    "title": "夏セールキャンペーンの予算増額",
+                    "description": "最も高いCTR（2.61%）を示している夏セールキャンペーンの予算を20%増額することで、より多くのコンバージョンを獲得できます。",
+                    "expected_impact": "コンバージョン数 +18%, CTR維持"
+                },
+                {
+                    "type": "ad_group_optimization",
+                    "priority": "medium",
+                    "title": "新商品バナー_サブ広告グループの改善",
+                    "description": "CTR 2.25%と低調な新商品バナー_サブ広告グループのクリエイティブを見直し、メイン広告グループのパフォーマンスに近づけることを推奨します。",
+                    "expected_impact": "CTR +0.15%, コンバージョン数 +5%"
+                }
+            ]
+            }
+        }
+
+        return sample_ad_report
+
+    except Exception as e:
+        error_msg = f"サンプル広告レポートJSON生成中にエラーが発生しました: {str(e)}"
+        return {"status": "ERROR", "error": error_msg}

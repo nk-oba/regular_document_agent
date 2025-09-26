@@ -1,3 +1,3 @@
-"""ad_analyzer_agent: Ad Analyzer Agent analyzes the ad data."""
+from .agent import root_agent
 
-from .agent import ad_analyzer_agent
+__all__ = ["root_agent"]
