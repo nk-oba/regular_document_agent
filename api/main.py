@@ -1050,15 +1050,9 @@ async def list_sessions(app_name: str, user_id: str, limit: Optional[int] = None
     )
     
     existing_sessions = response.sessions if hasattr(response, 'sessions') else []
-    existing_sessions = list(reversed(existing_sessions))  # Newest first
     
-    total_count = len(existing_sessions)
-    start_index = offset or 0
-    end_index = start_index + limit if limit else len(existing_sessions)
-    paginated_sessions = existing_sessions[start_index:end_index]
-
-    formatted_sessions = []
-    for session in paginated_sessions:
+    sessions_with_details = []
+    for session in existing_sessions:
         session_dict, first_message, last_message = await get_session_details(session_service, app_name, user_id, session)
         
         # Format timestamps in messages
@@ -1079,7 +1073,20 @@ async def list_sessions(app_name: str, user_id: str, limit: Optional[int] = None
             "lastMessage": last_message
         }
         
-        formatted_sessions.append(session_info)
+        sessions_with_details.append(session_info)
+    
+    try:
+        sessions_with_details.sort(
+            key=lambda x: x.get("id", ""), 
+            reverse=True
+        )
+    except Exception as e:
+        logger.warning(f"Failed to sort sessions by id: {e}")
+    
+    total_count = len(sessions_with_details)
+    start_index = offset or 0
+    end_index = start_index + limit if limit else len(sessions_with_details)
+    formatted_sessions = sessions_with_details[start_index:end_index]
     
     has_more = end_index < total_count
     
@@ -1093,7 +1100,7 @@ async def list_sessions(app_name: str, user_id: str, limit: Optional[int] = None
             "hasMore": has_more
         },
         "meta": {
-            "sortBy": "updatedAt",
+            "sortBy": "id",
             "order": "desc",
             "filters": {}
         }
