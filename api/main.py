@@ -3,6 +3,7 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 from google.adk.cli.fast_api import get_fast_api_app
+from google.adk.sessions import DatabaseSessionService
 import uvicorn
 from fastapi import FastAPI, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +17,9 @@ import logging
 from shared.core.config import AppConfig, LogConfig
 from shared.services.app_utils import generate_adk_user_id
 from shared.services.error_handlers import handle_auth_error, create_success_response
+
+# Import utility modules
+from api.utils.session_utils import get_session_details
 
 # ログ設定
 logging.basicConfig(
@@ -124,16 +128,16 @@ except Exception as e:
 
 
 # CORS設定を最初に適用（認証ミドルウェアより前に）
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=AppConfig.ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=AppConfig.ALLOWED_ORIGINS,
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
 
-# 認証ミドルウェアを追加（CORSの後に）
-app.middleware("http")(auth_middleware)
+# # 認証ミドルウェアを追加（CORSの後に）
+# app.middleware("http")(auth_middleware)
 
 # MCP ADA認証コールバック用のHTMLエンドポイント
 @app.get("/static/mcp_ada_callback.html", response_class=HTMLResponse)
@@ -1033,6 +1037,49 @@ async def cleanup_old_archived_chats(days_to_keep: int = 90):
     except Exception as e:
         logger.error(f"Failed to cleanup old archived chats: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.get("/apps/{app_name}/sessions/{user_id}")
+async def list_sessions(app_name: str, user_id: str, limit: Optional[int] = None, offset: Optional[int] = None):
+    """セッション一覧を取得"""
+    session_service = DatabaseSessionService(AppConfig.SESSION_DB_URL)
+    
+    response = await session_service.list_sessions(
+        app_name=app_name,
+        user_id=user_id,
+    )
+    
+    existing_sessions = response.sessions if hasattr(response, 'sessions') else []
+    existing_sessions = list(reversed(existing_sessions))  # Newest first
+    
+    total_count = len(existing_sessions)
+    if offset is not None:
+        existing_sessions = existing_sessions[offset:]
+    if limit is not None:
+        existing_sessions = existing_sessions[:limit]
+
+    formatted_sessions = []
+    for session in existing_sessions:
+        session_dict, first_message = await get_session_details(session_service, app_name, user_id, session)
+        
+        session_info = {
+            "id": session_dict.get("session_id") or session_dict.get("id"),
+            "createdAt": session_dict.get("created_at") or session_dict.get("createdAt"),
+            "selectedAgent": app_name,
+            "title": session_dict.get("title") or f"Session {str(session_dict.get('session_id', ''))[:8]}",
+            "firstMessage": first_message
+        }
+        
+        formatted_sessions.append(session_info)
+    
+    return {
+        "sessions": formatted_sessions,
+        "count": len(formatted_sessions),
+        "total_available": total_count,
+        "limit": limit,
+        "offset": offset
+    }
+
 
 @app.get("/download/artifact/{app_name}/{user_id}/{session_id}/{artifact_name}")
 async def download_artifact_stream(
