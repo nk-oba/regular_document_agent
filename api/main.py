@@ -19,7 +19,7 @@ from shared.services.app_utils import generate_adk_user_id
 from shared.services.error_handlers import handle_auth_error, create_success_response
 
 # Import utility modules
-from api.utils.session_utils import get_session_details
+from api.utils.session_utils import get_session_details, format_timestamp
 
 # ログ設定
 logging.basicConfig(
@@ -1053,31 +1053,50 @@ async def list_sessions(app_name: str, user_id: str, limit: Optional[int] = None
     existing_sessions = list(reversed(existing_sessions))  # Newest first
     
     total_count = len(existing_sessions)
-    if offset is not None:
-        existing_sessions = existing_sessions[offset:]
-    if limit is not None:
-        existing_sessions = existing_sessions[:limit]
+    start_index = offset or 0
+    end_index = start_index + limit if limit else len(existing_sessions)
+    paginated_sessions = existing_sessions[start_index:end_index]
 
     formatted_sessions = []
-    for session in existing_sessions:
-        session_dict, first_message = await get_session_details(session_service, app_name, user_id, session)
+    for session in paginated_sessions:
+        session_dict, first_message, last_message = await get_session_details(session_service, app_name, user_id, session)
+        
+        # Format timestamps in messages
+        if first_message and first_message.get('timestamp'):
+            first_message['timestamp'] = format_timestamp(first_message['timestamp'])
+        if last_message and last_message.get('timestamp'):
+            last_message['timestamp'] = format_timestamp(last_message['timestamp'])
         
         session_info = {
-            "id": session_dict.get("session_id") or session_dict.get("id"),
-            "createdAt": session_dict.get("created_at") or session_dict.get("createdAt"),
+            "id": session_dict.get("session_id"),
+            "title": session_dict.get("title"),
+            "createdAt": session_dict.get("created_at"),
+            "updatedAt": session_dict.get("updated_at"),
+            "messageCount": session_dict.get("message_count", 0),
+            "status": session_dict.get("status", "active"),
             "selectedAgent": app_name,
-            "title": session_dict.get("title") or f"Session {str(session_dict.get('session_id', ''))[:8]}",
-            "firstMessage": first_message
+            "firstMessage": first_message,
+            "lastMessage": last_message
         }
         
         formatted_sessions.append(session_info)
     
+    has_more = end_index < total_count
+    
     return {
         "sessions": formatted_sessions,
-        "count": len(formatted_sessions),
-        "total_available": total_count,
-        "limit": limit,
-        "offset": offset
+        "pagination": {
+            "count": len(formatted_sessions),
+            "total": total_count,
+            "limit": limit,
+            "offset": offset or 0,
+            "hasMore": has_more
+        },
+        "meta": {
+            "sortBy": "updatedAt",
+            "order": "desc",
+            "filters": {}
+        }
     }
 
 
