@@ -13,16 +13,16 @@ from google.genai import types
 
 from .sub_agents import slide_agent, playwright_agent, ds_agent
 
-# パスを追加してauth モジュールをインポート可能にする
+# Add path to make auth module importable
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from shared.auth.google_auth import get_google_access_token
 
 
 def get_tools():
-    """MCPツールを安全に読み込み（遅延初期化）"""
+    """Safely load MCP tools (lazy initialization)"""
     tools = []
 
-    # Artifact生成ツールを追加
+    # Add Artifact generation tools
     tools.extend([
         # call_playwright_agent,
 
@@ -37,7 +37,7 @@ def get_tools():
     ])
 
     
-    # TODO 動的認証に組み替える
+    # TODO: Replace with dynamic authentication
     mcp_toolset = None
     try:
         from shared.auth.mcp_ada_auth import get_mcp_ada_access_token
@@ -57,23 +57,23 @@ def get_tools():
     except Exception as e:
         logging.error(f"Failed to initialize MCP ADA toolset: {e}")
 
-    # MCP ADA toolsetをtoolsに追加（認証済みの場合のみ）
+    # Add MCP ADA toolset to tools (only if authenticated)
     if mcp_toolset:
         tools.append(mcp_toolset)
         logging.info("MCP ADA toolset added to tools")
 
-    # # list_tools関数をインポートして追加
+    # # Import and add list_tools function
     # try:
     #     from list_tools import list_tools
     #     tools.append(list_tools)
     # except ImportError as e:
     #     logging.warning(f"Failed to import list_tools: {e}")
     
-    # MCPツールの初期化をスキップしてサーバー起動を優先
+    # Skip MCP tool initialization to prioritize server startup
     logging.info("MCP tools will be initialized on first use (lazy loading)")
     logging.info(f"Added {len(tools)} tools (including MCP toolset if authenticated)")
     
-    # # MCP ADAが認証済みの場合、サーバーから実際のツールを動的に取得
+    # # If MCP ADA is authenticated, dynamically get actual tools from server
     # try:
     #     from mcp_dynamic_tools import create_mcp_ada_dynamic_tools
     #     dynamic_mcp_tools = create_mcp_ada_dynamic_tools()
@@ -90,11 +90,11 @@ def get_tools():
 
 
 def get_mcp_ada_tool():
-    """MCP ADAツールを安全に初期化"""
+    """Safely initialize MCP ADA tool"""
     try:
         URL = "https://mcp-server-ad-analyzer.adt-c1a.workers.dev/mcp"
         
-        # Google OAuth2.0でアクセストークンを取得
+        # Get access token with Google OAuth2.0
         access_token = get_google_access_token()
         
         if not access_token:
@@ -104,7 +104,7 @@ def get_mcp_ada_tool():
         logging.debug(f"Initializing MCP ADA tool: {URL}")
         logging.debug(f"Using access token: {access_token[:20]}..." if access_token else "No access token")
         
-        # デバッグ: ヘッダー情報をログ出力
+        # Debug: Log header information
         headers = {"Authorization": f"Bearer {access_token}"}
         logging.debug(f"Request headers: {headers}")
         
@@ -126,7 +126,7 @@ def get_mcp_ada_tool():
 
 
 def get_mcp_powerpoint_tool():
-    """MCP PowerPointツールを安全に初期化"""
+    """Safely initialize MCP PowerPoint tool"""
     try:
         logging.debug("Initializing MCP PowerPoint tool")
         
@@ -149,48 +149,48 @@ def get_mcp_powerpoint_tool():
 
 async def generate_sample_csv_report(tool_context):
     """
-    サンプルCSVレポートを生成してダウンロード可能なArtifactとして保存する
+    Generate a sample CSV report and save it as a downloadable Artifact
     
     Args:
         tool_context: ADK tool context
         
     Returns:
-        str: 生成されたCSVファイルの情報
+        str: Information about the generated CSV file
     """
     try:
-        # テスト用のサンプルデータを生成
+        # Generate test sample data
         sample_data = [
             ["Campaign ID", "Campaign Name", "Impressions", "Clicks", "CTR (%)", "Cost (JPY)", "CPC (JPY)", "Date"],
-            ["12345", "夏セールキャンペーン", "125,000", "3,200", "2.56", "48,000", "15", "2024-08-15"],
-            ["12346", "新商品発売記念", "89,500", "2,150", "2.40", "32,250", "15", "2024-08-16"],
-            ["12347", "バックトゥスクール", "156,300", "4,890", "3.13", "73,350", "15", "2024-08-17"],
-            ["12348", "週末限定セール", "203,100", "6,093", "3.00", "91,395", "15", "2024-08-18"],
-            ["12349", "アウトレットクリアランス", "78,900", "1,578", "2.00", "23,670", "15", "2024-08-19"]
+            ["12345", "Summer Sale Campaign", "125,000", "3,200", "2.56", "48,000", "15", "2024-08-15"],
+            ["12346", "New Product Launch", "89,500", "2,150", "2.40", "32,250", "15", "2024-08-16"],
+            ["12347", "Back to School", "156,300", "4,890", "3.13", "73,350", "15", "2024-08-17"],
+            ["12348", "Weekend Flash Sale", "203,100", "6,093", "3.00", "91,395", "15", "2024-08-18"],
+            ["12349", "Outlet Clearance", "78,900", "1,578", "2.00", "23,670", "15", "2024-08-19"]
         ]
         
-        # CSVデータをバイト形式で生成
+        # Generate CSV data in byte format
         csv_buffer = io.StringIO()
         csv_writer = csv.writer(csv_buffer)
         csv_writer.writerows(sample_data)
-        csv_bytes = csv_buffer.getvalue().encode('utf-8-sig')  # BOM付きUTF-8でExcel対応
+        csv_bytes = csv_buffer.getvalue().encode('utf-8-sig')  # UTF-8 with BOM for Excel compatibility
         
-        # ADK Artifactとして作成
+        # Create as ADK Artifact
         csv_artifact = types.Part.from_bytes(
             data=csv_bytes,
             mime_type="text/csv"
         )
         
-        # ファイル名にタイムスタンプを含める
+        # Include timestamp in filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"advertising_campaign_report_{timestamp}.csv"
         
-        # 新しいヘルパー関数を使用してArtifactを保存
+        # Use new helper function to save Artifact
         import sys
         import os
         sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
         from shared.utils.artifact_user_helper import save_artifact_with_proper_user_id, format_download_section
         
-        # Artifactを適切なユーザー管理で保存
+        # Save Artifact with proper user management
         save_result = await save_artifact_with_proper_user_id(
             tool_context=tool_context,
             filename=filename,
@@ -200,34 +200,34 @@ async def generate_sample_csv_report(tool_context):
         
         if save_result['success']:
             logging.info(f"CSV report generated successfully: {filename} (version {save_result['version']})")
-            # フォーマット済みダウンロードセクションを取得
+            # Get formatted download section
             download_section = format_download_section(save_result)
             version = save_result['version']
         else:
             logging.error(f"Failed to save CSV artifact: {save_result.get('error')}")
-            download_section = f"❌ ファイル保存エラー: {save_result.get('error', 'Unknown error')}"
+            download_section = f"❌ File save error: {save_result.get('error', 'Unknown error')}"
             version = 0
         
-        return f"""✅ CSVレポートが正常に生成されました！
+        return f"""✅ CSV report generated successfully!
 
-📄 **ファイル名**: `{filename}`
-📊 **データ**: 5件のサンプル広告キャンペーンデータ
-🔢 **バージョン**: {version}
-🕐 **生成日時**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+📄 **Filename**: `{filename}`
+📊 **Data**: 5 sample advertising campaign data entries
+🔢 **Version**: {version}
+🕐 **Generated at**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 {download_section}
 
-📊 **含まれるデータ**:
-- キャンペーンID、キャンペーン名
-- インプレッション数、クリック数
-- CTR（クリック率）、広告費用
-- CPC（クリック単価）、実行日付
+📊 **Included data**:
+- Campaign ID, Campaign Name
+- Impressions, Clicks
+- CTR (Click-through rate), Ad cost
+- CPC (Cost per click), Execution date
 
-💡 このファイルはExcelで直接開いて分析可能です！
+💡 This file can be opened directly in Excel for analysis!
 """
         
     except Exception as e:
-        error_msg = f"CSV生成中にエラーが発生しました: {str(e)}"
+        error_msg = f"Error occurred while generating CSV: {str(e)}"
         logging.error(error_msg)
         import traceback
         traceback.print_exc()
@@ -236,7 +236,7 @@ async def generate_sample_csv_report(tool_context):
 
 
 # ==============================================================================
-# MCP認証ツール統合
+# MCP Authentication Tool Integration
 # ==============================================================================
 
 async def authenticate_mcp_server_tool(
@@ -246,45 +246,45 @@ async def authenticate_mcp_server_tool(
     scopes: Optional[list[str]] = None
 ):
     """
-    MCP ADA準拠のOAuth 2.1認証を実行するツール
+    Tool to execute MCP ADA compliant OAuth 2.1 authentication
     
     Args:
         tool_context: ADK tool context
-        server_url: 認証対象のMCPサーバーURL
-        user_id: ユーザーID（未指定の場合はセッションから自動取得）
-        scopes: 要求するスコープリスト（デフォルト: ["mcp:reports", "mcp:properties"]）
+        server_url: MCP server URL to authenticate with
+        user_id: User ID (automatically retrieved from session if not specified)
+        scopes: List of requested scopes (default: ["mcp:reports", "mcp:properties"])
         
     Returns:
-        str: 認証結果メッセージ
+        str: Authentication result message
     """
     try:
-        # セッション情報からユーザーIDを自動取得（user_idが未指定の場合）
+        # Auto-retrieve user ID from session info (if user_id is not specified)
         if user_id is None:
             from session_user_helper import get_user_id_from_session
             user_id = get_user_id_from_session(tool_context)
         
-        # MCP認証ツールセットをインポート
+        # Import MCP authentication toolset
         sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
         from mcp_client.mcp_toolset import authenticate_mcp_server_helper
         
-        # MCP ADA専用スコープをデフォルトに設定
+        # Set MCP ADA specific scopes as default
         if scopes is None:
             scopes = ["mcp:reports", "mcp:properties"]
         
         logging.info(f"Authenticating to MCP server: {server_url} (user: {user_id}, scopes: {scopes})")
         
-        # MCP認証を実行
+        # Execute MCP authentication
         result = await authenticate_mcp_server_helper(server_url, user_id, scopes)
         
         logging.info(f"MCP authentication completed for {server_url}")
         return result
         
     except ImportError as e:
-        error_msg = f"❌ MCP認証ツールが利用できません: {e}\n\n💡 MCP認証フレームワークが正しくインストールされているか確認してください。"
+        error_msg = f"❌ MCP authentication tool is not available: {e}\n\n💡 Please verify that the MCP authentication framework is correctly installed."
         logging.error(error_msg)
         return error_msg
     except Exception as e:
-        error_msg = f"❌ MCP認証中にエラーが発生しました: {str(e)}"
+        error_msg = f"❌ Error occurred during MCP authentication: {str(e)}"
         logging.error(error_msg)
         import traceback
         traceback.print_exc()
@@ -302,31 +302,31 @@ async def make_mcp_authenticated_request_tool(
     query_params: Optional[dict] = None
 ):
     """
-    MCP認証付きHTTPリクエストを実行するツール
+    Tool to execute MCP authenticated HTTP requests
     
     Args:
         tool_context: ADK tool context
-        server_url: MCPサーバーURL
-        method: HTTPメソッド（GET, POST, PUT, DELETE, PATCH）
-        path: リクエストパス
-        user_id: ユーザーID（未指定の場合はセッションから自動取得）
-        headers: 追加のHTTPヘッダー
-        json_data: JSONボディデータ
-        query_params: クエリパラメータ
+        server_url: MCP server URL
+        method: HTTP method (GET, POST, PUT, DELETE, PATCH)
+        path: Request path
+        user_id: User ID (automatically retrieved from session if not specified)
+        headers: Additional HTTP headers
+        json_data: JSON body data
+        query_params: Query parameters
         
     Returns:
-        str: リクエスト結果
+        str: Request result
     """
     try:
-        # セッション情報からユーザーIDを自動取得（user_idが未指定の場合）
+        # Auto-retrieve user ID from session info (if user_id is not specified)
         if user_id is None:
             from session_user_helper import get_user_id_from_session
             user_id = get_user_id_from_session(tool_context)
-        # MCP認証ツールセットをインポート
+        # Import MCP authentication toolset
         sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
         from mcp_client.mcp_toolset import mcp_request_helper
         
-        # パラメータの準備
+        # Prepare parameters
         kwargs = {}
         if headers:
             kwargs["headers"] = headers
@@ -337,7 +337,7 @@ async def make_mcp_authenticated_request_tool(
         
         logging.info(f"Making authenticated request: {method} {server_url}{path} (user: {user_id})")
         
-        # MCP認証付きリクエストを実行
+        # Execute MCP authenticated request
         result = await mcp_request_helper(
             server_url,
             method.upper(),
@@ -350,11 +350,11 @@ async def make_mcp_authenticated_request_tool(
         return result
         
     except ImportError as e:
-        error_msg = f"❌ MCP認証ツールが利用できません: {e}\n\n💡 MCP認証フレームワークが正しくインストールされているか確認してください。"
+        error_msg = f"❌ MCP authentication tool is not available: {e}\n\n💡 Please verify that the MCP authentication framework is correctly installed."
         logging.error(error_msg)
         return error_msg
     except Exception as e:
-        error_msg = f"❌ MCP認証付きリクエスト中にエラーが発生しました: {str(e)}"
+        error_msg = f"❌ Error occurred during MCP authenticated request: {str(e)}"
         logging.error(error_msg)
         import traceback
         traceback.print_exc()
@@ -367,66 +367,66 @@ async def check_mcp_auth_status_tool(
     user_id: Optional[str] = None
 ):
     """
-    MCP認証状態を確認するツール
+    Tool to check MCP authentication status
     
     Args:
         tool_context: ADK tool context
-        server_url: MCPサーバーURL
-        user_id: ユーザーID（未指定の場合はセッションから自動取得）
+        server_url: MCP server URL
+        user_id: User ID (automatically retrieved from session if not specified)
         
     Returns:
-        str: 認証状態情報
+        str: Authentication status information
     """
     try:
-        # セッション情報からユーザーIDを自動取得（user_idが未指定の場合）
+        # Auto-retrieve user ID from session info (if user_id is not specified)
         if user_id is None:
             from session_user_helper import get_user_id_from_session
             user_id = get_user_id_from_session(tool_context)
-        # MCP認証ツールセットをインポート
+        # Import MCP authentication toolset
         sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
         from mcp_client.mcp_toolset import get_mcp_auth_toolset
         
         logging.info(f"Checking auth status for: {server_url} (user: {user_id})")
         
-        # 認証状態をチェック
+        # Check authentication status
         auth_toolset = get_mcp_auth_toolset()
         status_result = await auth_toolset.check_status(server_url, user_id)
         
-        # 結果をフォーマット
+        # Format result
         if status_result.get("authenticated"):
-            result = f"""✅ 認証状態確認完了
+            result = f"""✅ Authentication status check completed
 
 {status_result.get('result', '')}
 
-💡 **状態**: 認証済み
-🌐 **サーバー**: {server_url}
-👤 **ユーザー**: {user_id}
+💡 **Status**: Authenticated
+🌐 **Server**: {server_url}
+👤 **User**: {user_id}
 """
         else:
-            result = f"""❌ 認証が必要です
+            result = f"""❌ Authentication required
 
-🌐 **サーバー**: {server_url}
-👤 **ユーザー**: {user_id}
-🔐 **状態**: 未認証
+🌐 **Server**: {server_url}
+👤 **User**: {user_id}
+🔐 **Status**: Not authenticated
 
-💡 **次のステップ**: 
+💡 **Next step**: 
 ```
 authenticate_mcp_server_tool("{server_url}", "{user_id}")
 ```
-を実行して認証してください。
+Please run to authenticate.
 
-エラー詳細: {status_result.get('error', 'Unknown error')}
+Error details: {status_result.get('error', 'Unknown error')}
 """
         
         logging.info(f"Auth status check completed for {server_url}")
         return result
         
     except ImportError as e:
-        error_msg = f"❌ MCP認証ツールが利用できません: {e}\n\n💡 MCP認証フレームワークが正しくインストールされているか確認してください。"
+        error_msg = f"❌ MCP authentication tool is not available: {e}\n\n💡 Please verify that the MCP authentication framework is correctly installed."
         logging.error(error_msg)
         return error_msg
     except Exception as e:
-        error_msg = f"❌ MCP認証状態確認中にエラーが発生しました: {str(e)}"
+        error_msg = f"❌ Error occurred during MCP authentication status check: {str(e)}"
         logging.error(error_msg)
         import traceback
         traceback.print_exc()
@@ -436,7 +436,7 @@ authenticate_mcp_server_tool("{server_url}", "{user_id}")
 
 ## ==============================================================================
 
-# 構成検討エージェント呼び出し
+# Configuration consideration agent call
 async def call_playwright_agent(
     ad_report_data: dict,
     tool_context: ToolContext,
@@ -468,7 +468,7 @@ async def call_playwright_agent(
     return playwright_agent_output
 
 
-# 資料作成エージェント呼び出し
+# Document creation agent call
 async def call_slide_agent(
     outline: str,
     ad_report_data: dict,
@@ -502,16 +502,20 @@ async def call_slide_agent(
     tool_context.state["slide_agent_output"] = slide_agent_output
     return slide_agent_output
 
-# 分析エージェント呼び出し
+# Analysis agent call
 async def call_ds_agent(
     question: str,
     tool_context: ToolContext,
 ):
-    """Tool to call data science (nl2py) agent with streaming support."""
-    import asyncio
-    import time
+    """Tool to call data science (nl2py) agent with progress tracking."""
+
+    async def progress_callback(event_type: str, message: str):
+        """Log progress events for monitoring."""
+        logging.info(f"[DS Agent Progress] {event_type}: {message}")
+        # TODO: Future extension point to send progress via WebSocket or SSE
 
     if question == "N/A":
+        await progress_callback("cache_hit", "Returning cached result")
         return tool_context.state.get("ds_agent_output", "No previous data science agent output available")
 
     input_data = tool_context.state.get("csv_report_output")
@@ -523,55 +527,43 @@ async def call_ds_agent(
 
   """
 
-    progress_messages = [
-        "Starting data analysis...",
-        "Executing data preprocessing...",
-        "Running statistical analysis...",
-        "Generating visualizations and graphs...",
-        "Summarizing analysis results..."
-    ]
-    
-    progress_task = None
     try:
-        async def show_progress():
-            for i, message in enumerate(progress_messages):
-                logging.info(f"Progress {i+1}/{len(progress_messages)}: {message}")
-                if i < len(progress_messages) - 1:
-                    await asyncio.sleep(1.5)
-        
-        progress_task = asyncio.create_task(show_progress())
-        
+        await progress_callback("start", "Starting data analysis...")
+
+        # Use AgentTool for stable execution
         agent_tool = AgentTool(agent=ds_agent)
-        
+
+        await progress_callback("processing", "Executing data analysis...")
+        logging.info("Calling ds_agent via AgentTool.run_async")
+
         ds_agent_output = await agent_tool.run_async(
-            args={"request": question_with_data}, 
+            args={"request": question_with_data},
             tool_context=tool_context
         )
-        
-        if progress_task and not progress_task.done():
-            progress_task.cancel()
-        
+
+        await progress_callback("complete", "Data analysis completed")
+        logging.info("ds_agent completed successfully")
+
+        # Save result to state
         tool_context.state["ds_agent_output"] = ds_agent_output
-        
+
         return ds_agent_output
-        
+
     except Exception as e:
-        if progress_task and not progress_task.done():
-            progress_task.cancel()
-            
         error_msg = f"An error occurred during data analysis: {str(e)}"
-        logging.error(error_msg)
+        await progress_callback("error", error_msg)
+        logging.error(error_msg, exc_info=True)
         return {"status": "ERROR", "error": error_msg}
 
 async def execute_get_ad_report(tool_context=None):
     """
-    サンプル広告レポート数値のJSONデータを返却するツール
+    Tool to return sample advertising report numerical data in JSON format
 
     Args:
         tool_context: ADK tool context (optional)
 
     Returns:
-        dict: サンプル広告レポートデータ
+        dict: Sample advertising report data
     """
     try:
         sample_ad_report = {
@@ -579,7 +571,7 @@ async def execute_get_ad_report(tool_context=None):
             "data": {
             "report_metadata": {
                 "report_id": "RPT-2024-0824-001",
-                "report_name": "月次広告運用レポート",
+                "report_name": "Monthly Advertising Operations Report",
                 "period": {
                     "start_date": "2024-08-01",
                     "end_date": "2024-08-31"
@@ -601,8 +593,8 @@ async def execute_get_ad_report(tool_context=None):
             "campaigns": [
                 {
                     "campaign_id": "12345",
-                    "campaign_name": "夏セールキャンペーン",
-                    "campaign_type": "検索広告",
+                    "campaign_name": "Summer Sale Campaign",
+                    "campaign_type": "Search Ads",
                     "status": "active",
                     "start_date": "2024-08-01",
                     "end_date": "2024-08-15",
@@ -620,7 +612,7 @@ async def execute_get_ad_report(tool_context=None):
                     "ad_groups": [
                         {
                             "ad_group_id": "AG101",
-                            "ad_group_name": "夏セール_検索_メイン",
+                            "ad_group_name": "Summer Sale_Search_Main",
                             "impressions": 280000,
                             "clicks": 7200,
                             "cost": 108000,
@@ -648,7 +640,7 @@ async def execute_get_ad_report(tool_context=None):
                         },
                         {
                             "ad_group_id": "AG102",
-                            "ad_group_name": "夏セール_検索_サブ",
+                            "ad_group_name": "Summer Sale_Search_Sub",
                             "impressions": 180000,
                             "clicks": 4800,
                             "cost": 72000,
@@ -678,8 +670,8 @@ async def execute_get_ad_report(tool_context=None):
                 },
                 {
                     "campaign_id": "12346",
-                    "campaign_name": "新商品発売記念",
-                    "campaign_type": "ディスプレイ広告",
+                    "campaign_name": "New Product Launch",
+                    "campaign_type": "Display Ads",
                     "status": "active",
                     "start_date": "2024-08-16",
                     "end_date": "2024-08-31",
@@ -697,7 +689,7 @@ async def execute_get_ad_report(tool_context=None):
                     "ad_groups": [
                         {
                             "ad_group_id": "AG201",
-                            "ad_group_name": "新商品バナー_メイン",
+                            "ad_group_name": "New Product Banner_Main",
                             "impressions": 320000,
                             "clicks": 7680,
                             "cost": 115200,
@@ -726,7 +718,7 @@ async def execute_get_ad_report(tool_context=None):
                         },
                         {
                             "ad_group_id": "AG202",
-                            "ad_group_name": "新商品バナー_サブ",
+                            "ad_group_name": "New Product Banner_Sub",
                             "impressions": 192000,
                             "clicks": 4320,
                             "cost": 64800,
@@ -757,8 +749,8 @@ async def execute_get_ad_report(tool_context=None):
                 },
                 {
                     "campaign_id": "12347",
-                    "campaign_name": "バックトゥスクール",
-                    "campaign_type": "動画広告",
+                    "campaign_name": "Back to School",
+                    "campaign_type": "Video Ads",
                     "status": "active",
                     "start_date": "2024-08-01",
                     "end_date": "2024-08-31",
@@ -776,7 +768,7 @@ async def execute_get_ad_report(tool_context=None):
                     "ad_groups": [
                         {
                             "ad_group_id": "AG301",
-                            "ad_group_name": "バックトゥスクール_動画_15秒",
+                            "ad_group_name": "Back to School_Video_15sec",
                             "impressions": 342480,
                             "clicks": 8742,
                             "cost": 131130,
@@ -820,7 +812,7 @@ async def execute_get_ad_report(tool_context=None):
                         },
                         {
                             "ad_group_id": "AG302",
-                            "ad_group_name": "バックトゥスクール_動画_30秒",
+                            "ad_group_name": "Back to School_Video_30sec",
                             "impressions": 228320,
                             "clicks": 5828,
                             "cost": 87420,
@@ -902,16 +894,16 @@ async def execute_get_ad_report(tool_context=None):
                 {
                     "type": "campaign_optimization",
                     "priority": "high",
-                    "title": "夏セールキャンペーンの予算増額",
-                    "description": "最も高いCTR（2.61%）を示している夏セールキャンペーンの予算を20%増額することで、より多くのコンバージョンを獲得できます。",
-                    "expected_impact": "コンバージョン数 +18%, CTR維持"
+                    "title": "Increase Budget for Summer Sale Campaign",
+                    "description": "The Summer Sale Campaign shows the highest CTR (2.61%). Increasing the budget by 20% could acquire more conversions.",
+                    "expected_impact": "Conversion count +18%, CTR maintained"
                 },
                 {
                     "type": "ad_group_optimization",
                     "priority": "medium",
-                    "title": "新商品バナー_サブ広告グループの改善",
-                    "description": "CTR 2.25%と低調な新商品バナー_サブ広告グループのクリエイティブを見直し、メイン広告グループのパフォーマンスに近づけることを推奨します。",
-                    "expected_impact": "CTR +0.15%, コンバージョン数 +5%"
+                    "title": "Improve New Product Banner_Sub Ad Group",
+                    "description": "The New Product Banner_Sub ad group shows a low CTR of 2.25%. We recommend reviewing the creative to bring it closer to the main ad group's performance.",
+                    "expected_impact": "CTR +0.15%, Conversion count +5%"
                 }
             ]
             }
@@ -920,5 +912,5 @@ async def execute_get_ad_report(tool_context=None):
         return sample_ad_report
 
     except Exception as e:
-        error_msg = f"サンプル広告レポートJSON生成中にエラーが発生しました: {str(e)}"
+        error_msg = f"Error occurred while generating sample advertising report JSON: {str(e)}"
         return {"status": "ERROR", "error": error_msg}
