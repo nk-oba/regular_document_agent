@@ -507,36 +507,61 @@ async def call_ds_agent(
     question: str,
     tool_context: ToolContext,
 ):
-    """Tool to call data science (nl2py) agent."""
+    """Tool to call data science (nl2py) agent with streaming support."""
+    import asyncio
+    import time
 
     if question == "N/A":
-        return tool_context.state.get("db_agent_output", "No previous data science agent output available")
+        return tool_context.state.get("ds_agent_output", "No previous data science agent output available")
 
     input_data = tool_context.state.get("csv_report_output")
-    if input_data is None:
-        from .tools import execute_get_ad_report
-        ad_report_result = await execute_get_ad_report(tool_context)
-        if ad_report_result.get('status') == 'SUCCESS':
-            input_data = ad_report_result.get('data', {})
-            tool_context.state["csv_report_output"] = input_data
-        else:
-            return {"status": "ERROR", "error": "Could not retrieve ad report data for analysis"}
-
     question_with_data = f"""
   Question to answer: {question}
 
-  Actual data to analyze prevoius quesiton is already in the following:
+  Actual data to analyze previous question is already in the following:
   {input_data}
 
   """
 
-    agent_tool = AgentTool(agent=ds_agent)
-
-    ds_agent_output = await agent_tool.run_async(
-        args={"request": question_with_data}, tool_context=tool_context
-    )
-    tool_context.state["ds_agent_output"] = ds_agent_output
-    return ds_agent_output
+    progress_messages = [
+        "Starting data analysis...",
+        "Executing data preprocessing...",
+        "Running statistical analysis...",
+        "Generating visualizations and graphs...",
+        "Summarizing analysis results..."
+    ]
+    
+    progress_task = None
+    try:
+        async def show_progress():
+            for i, message in enumerate(progress_messages):
+                logging.info(f"Progress {i+1}/{len(progress_messages)}: {message}")
+                if i < len(progress_messages) - 1:
+                    await asyncio.sleep(1.5)
+        
+        progress_task = asyncio.create_task(show_progress())
+        
+        agent_tool = AgentTool(agent=ds_agent)
+        
+        ds_agent_output = await agent_tool.run_async(
+            args={"request": question_with_data}, 
+            tool_context=tool_context
+        )
+        
+        if progress_task and not progress_task.done():
+            progress_task.cancel()
+        
+        tool_context.state["ds_agent_output"] = ds_agent_output
+        
+        return ds_agent_output
+        
+    except Exception as e:
+        if progress_task and not progress_task.done():
+            progress_task.cancel()
+            
+        error_msg = f"An error occurred during data analysis: {str(e)}"
+        logging.error(error_msg)
+        return {"status": "ERROR", "error": error_msg}
 
 async def execute_get_ad_report(tool_context=None):
     """
