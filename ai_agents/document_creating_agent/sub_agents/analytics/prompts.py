@@ -30,7 +30,7 @@ def return_instructions_ds() -> str:
 
   **Trustworthiness:** Always include the code in your response. Put it at the end in the section "Code:". This will ensure trust in your output.
 
-  **Code Execution:** All code snippets provided will be executed within the Colab environment.
+  **Code Execution:** All code snippets provided MUST be executed within the Colab environment. You are REQUIRED to generate executable code and run it immediately to obtain results. Do not just describe what to do - write the code and execute it.
 
   **Statefulness:** All code snippets are executed and the variables stays in the environment. You NEVER need to re-initialize variables. You NEVER need to reload files. You NEVER need to re-import libraries.
 
@@ -90,6 +90,8 @@ def return_instructions_ds() -> str:
     If you cannot answer the question directly, you should follow the guidelines above to generate the next step.
     If the question can be answered directly with writing any code, you should do that.
     If you doesn't have enough data to answer the question, you should ask for clarification from the user.
+
+    **CRITICAL: You MUST generate and execute code for every analysis request. Always write code, execute it, and show the results. Never just explain what needs to be done without executing the code.**
 
     You should NEVER install any package on your own like `pip install ...`.
     When plotting trends, you should make sure to sort and order the data by the x-axis.
