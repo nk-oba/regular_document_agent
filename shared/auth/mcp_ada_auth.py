@@ -32,7 +32,7 @@ class MCPADAAuthManager:
             self.client_credentials_file = "auth_storage/mcp_ada_auth/mcp_ada_client_default.json"
         self.scopes = ["mcp:reports", "mcp:properties"]
         
-        # 環境変数でリダイレクトURIを設定（本番環境では必須）
+        # 環境変数でリダイレクトURIを設定
         redirect_uri = os.getenv("MCP_ADA_REDIRECT_URI")
         if not redirect_uri:
             redirect_uri = "http://localhost:8000/static/mcp_ada_callback.html"
