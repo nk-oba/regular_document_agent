@@ -139,18 +139,9 @@ except Exception as e:
 # # 認証ミドルウェアを追加（CORSの後に）
 # app.middleware("http")(auth_middleware)
 
-# MCP ADA認証コールバック用のHTMLエンドポイント
-@app.get("/static/mcp_ada_callback.html", response_class=HTMLResponse)
-async def mcp_ada_callback_html():
-    """MCP ADA認証コールバック用のHTMLページ"""
-    try:
-        with open("mcp_ada_callback.html", "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
-    except FileNotFoundError:
-        return HTMLResponse(content="<h1>MCP ADA Callback page not found</h1>", status_code=404)
-
 # 静的ファイルの設定（その他の静的ファイル用）
-app.mount("/static", StaticFiles(directory="."), name="static")
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # CORS設定は上記で適用済み
 

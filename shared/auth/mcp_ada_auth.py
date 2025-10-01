@@ -31,10 +31,14 @@ class MCPADAAuthManager:
             self.credentials_file = "auth_storage/mcp_ada_auth/mcp_ada_credentials_default.json"
             self.client_credentials_file = "auth_storage/mcp_ada_auth/mcp_ada_client_default.json"
         self.scopes = ["mcp:reports", "mcp:properties"]
-        # 環境変数でリダイレクトURIを設定可能にする
-        # デフォルトは現在のホストとポートを使用
-        default_redirect_uri = f"http://127.0.0.1:8000/static/mcp_ada_callback.html"
-        self.redirect_uri = os.getenv("MCP_ADA_REDIRECT_URI", default_redirect_uri)
+        
+        # 環境変数でリダイレクトURIを設定（本番環境では必須）
+        redirect_uri = os.getenv("MCP_ADA_REDIRECT_URI")
+        if not redirect_uri:
+            redirect_uri = "http://localhost:8000/static/mcp_ada_callback.html"
+            logging.warning("MCP_ADA_REDIRECT_URI not set. Using localhost (development only)")
+        self.redirect_uri = redirect_uri
+        
         self.client_id = None
         self.client_secret = None
     

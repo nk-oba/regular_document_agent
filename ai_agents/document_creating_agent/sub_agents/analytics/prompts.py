@@ -81,6 +81,8 @@ def return_instructions_ds() -> str:
 
   **WHEN YOU DO PREDICTION / MODEL FITTING, ALWAYS PLOT FITTED LINE AS WELL **
 
+  **Graph Generation:** When creating graphs or visualizations, you MUST generate exactly ONE image per graph. Never create multiple images for a single graph. Each complete visualization must be saved as a single image file.
+
 
   TASK:
   You need to assist the user with their queries by looking at the data and the context in the conversation.
