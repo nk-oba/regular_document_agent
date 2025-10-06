@@ -13,35 +13,36 @@ logger = logging.getLogger(__name__)
 
 def get_user_id_from_session(tool_context) -> str:
     """
-    セッション情報から現在のログインユーザーIDを取得
-    
+    セッション情報から現在のログインユーザーIDを取得（Google User IDを優先）
+
     Args:
         tool_context: ADK tool context
-        
+
     Returns:
-        str: ユーザーID（emailまたは認証済みID）
+        str: Google User ID、なければデフォルト
     """
     try:
         # 共通のユーザー情報取得ヘルパーを使用
         from shared.utils.artifact_user_helper import get_artifact_user_info
-        
+
         user_info = get_artifact_user_info(tool_context)
-        
-        # メールアドレスが取得できている場合は、それをuser_idとして使用
-        if user_info.get('email'):
-            logger.info(f"Found user email from session: {user_info['email'][:10]}...")
-            return user_info['email']
-        
-        # ADK user IDが取得できている場合はそれを使用  
+
+        # Google User IDが取得できている場合は、それを最優先で使用
+        if user_info.get('id'):
+            google_user_id = user_info['id']
+            logger.info(f"Found Google User ID from session: {google_user_id}")
+            return google_user_id
+
+        # ADK user IDが取得できている場合はそれを使用
         elif user_info.get('user_id') and user_info['user_id'] != 'anonymous':
             logger.info(f"Found user_id from session: {user_info['user_id']}")
             return user_info['user_id']
-            
+
         # 認証されていない場合はデフォルト
         else:
             logger.warning("No authenticated user found in session, using default")
             return "default"
-            
+
     except Exception as e:
         logger.error(f"Failed to get user_id from session: {e}")
         return "default"

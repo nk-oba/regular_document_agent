@@ -43,7 +43,9 @@ async def oauth_callback(code: Optional[str] = None, error: Optional[str] = None
         # 一時的な認証マネージャーを使用してトークンを取得
         temp_auth_manager = get_auth_manager()
         credentials = temp_auth_manager.process_authorization_code(code)
-        
+        logger.info("credentials!!!")    
+        logger.info(credentials)
+
         if credentials:
             # ユーザー情報を取得
             try:
@@ -76,14 +78,45 @@ async def oauth_callback(code: Optional[str] = None, error: Optional[str] = None
                     sync_manager = get_session_sync_manager()
                     session_id, adk_user_id = sync_manager.on_login(user_data, credentials)
                 
-                # MCP用認証情報の保存
+                # MCP用認証情報の保存（Google User IDを使用）
                 try:
-                    mcp_auth_manager = get_mcp_ada_auth_manager()
-                    user_id = generate_adk_user_id(user_data["email"])
-                    mcp_auth_manager.save_user_credentials(user_id, credentials)
-                    logger.info(f"Credentials saved for MCP user: {user_id}")
+                    google_user_id = user_data.get("id")
+                    logger.info(f"Google User ID: {google_user_id}")
+                    if google_user_id:
+                        mcp_auth_manager = get_mcp_ada_auth_manager(google_user_id)
+                        # MCP ADA認証マネージャーの初期化（認証情報ファイルを準備）
+                        logger.info(f"MCP ADA auth manager initialized for Google User ID: {google_user_id}")
+
+                        # デバッグ: MCP ADA認証情報のステータスを表示
+                        import os
+                        credentials_file = mcp_auth_manager.credentials_file
+                        client_credentials_file = mcp_auth_manager.client_credentials_file
+
+                        logger.info(f"[DEBUG] MCP ADA credentials file path: {credentials_file}")
+                        logger.info(f"[DEBUG] MCP ADA credentials file exists: {os.path.exists(credentials_file)}")
+                        logger.info(f"[DEBUG] MCP ADA client credentials file path: {client_credentials_file}")
+                        logger.info(f"[DEBUG] MCP ADA client credentials file exists: {os.path.exists(client_credentials_file)}")
+
+                        if os.path.exists(credentials_file):
+                            credentials = mcp_auth_manager._load_credentials()
+                            if credentials:
+                                logger.info(f"[DEBUG] MCP ADA credentials loaded successfully")
+                                logger.info(f"[DEBUG] Has access_token: {'access_token' in credentials}")
+                                logger.info(f"[DEBUG] Has refresh_token: {'refresh_token' in credentials}")
+                                if 'expires_at' in credentials:
+                                    import time
+                                    is_valid = time.time() < credentials['expires_at']
+                                    logger.info(f"[DEBUG] Token is valid: {is_valid}")
+                                else:
+                                    logger.info(f"[DEBUG] No expiration info in credentials")
+                            else:
+                                logger.warning(f"[DEBUG] Failed to load MCP ADA credentials from existing file")
+                        else:
+                            logger.info(f"[DEBUG] MCP ADA credentials file does not exist yet - authentication required")
+                    else:
+                        logger.warning("No Google User ID found in user data")
                 except Exception as mcp_error:
-                    logger.warning(f"Failed to save MCP credentials: {mcp_error}")
+                    logger.warning(f"Failed to initialize MCP auth manager: {mcp_error}")
                 
                 logger.info(f"Unified session created - Login: {session_id}, ADK user: {adk_user_id}")
                 

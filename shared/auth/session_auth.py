@@ -107,13 +107,68 @@ class SessionAuthManager:
         except Exception as e:
             logger.warning(f"Failed to delete session file {session_file}: {e}")
     
+    def _save_session_to_database(self, session_id: str, session_data: dict):
+        """セッション情報をデータベースに保存"""
+        try:
+            # データベース初期化を保証
+            from .database_init import ensure_auth_database_initialized
+            if not ensure_auth_database_initialized():
+                logger.warning("Failed to initialize auth database, skipping database save")
+                return
+            
+            import sqlite3
+            db_path = "auth_storage/auth_sessions.db"
+            
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            user_info = session_data.get('user_info', {})
+            email = user_info.get('email', '')
+            
+            # ログインセッションを保存
+            cursor.execute("""
+                INSERT OR REPLACE INTO login_sessions 
+                (id, email, user_info, created_at, expires_at, last_accessed, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                session_id,
+                email,
+                json.dumps(user_info),
+                session_data.get('created_at'),
+                session_data.get('expires_at'),
+                session_data.get('last_accessed'),
+                'active'
+            ))
+            
+            # ADKユーザーIDを生成して関連付け
+            if email:
+                import hashlib
+                normalized_email = email.strip().lower()
+                adk_user_id = hashlib.sha256(normalized_email.encode('utf-8')).hexdigest()[:16]
+                
+                cursor.execute("""
+                    INSERT OR REPLACE INTO adk_sessions 
+                    (login_session_id, adk_user_id, created_at)
+                    VALUES (?, ?, ?)
+                """, (session_id, adk_user_id, session_data.get('created_at')))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.debug(f"Session saved to database: {session_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save session to database: {e}")
+            # データベースエラーは致命的ではないので続行
+    
     def create_session(self, user_info: dict, credentials: Credentials) -> str:
         """新しいセッションを作成"""
         session_id = str(uuid.uuid4())
         expires_at = time.time() + self.session_timeout
-        
+
         session_data = {
             'user_info': user_info,
+            'google_user_id': user_info.get('id'),  # Google User IDを明示的に保存
             'credentials': credentials.to_json(),
             'created_at': time.time(),
             'expires_at': expires_at,
@@ -122,6 +177,9 @@ class SessionAuthManager:
         
         # セッションファイルに保存
         self._save_session_file(session_id, session_data)
+        
+        # データベースにも保存
+        self._save_session_to_database(session_id, session_data)
         
         # メモリにも保存
         self._sessions[session_id] = session_data
@@ -209,12 +267,24 @@ class SessionAuthManager:
         session_id = self.get_session_id_from_request(request)
         if not session_id:
             return None
-        
+
         session_data = self.get_session(session_id)
         if not session_data:
             return None
-        
+
         return session_data.get('user_info')
+
+    def get_google_user_id(self, request: Request) -> Optional[str]:
+        """リクエストからGoogle User IDを取得"""
+        session_id = self.get_session_id_from_request(request)
+        if not session_id:
+            return None
+
+        session_data = self.get_session(session_id)
+        if not session_data:
+            return None
+
+        return session_data.get('google_user_id')
     
     def get_credentials(self, request: Request) -> Optional[Credentials]:
         """リクエストから認証情報を取得"""

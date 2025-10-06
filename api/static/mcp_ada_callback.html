@@ -91,7 +91,7 @@
                 const result = await response.json();
 
                 if (result.success) {
-                    document.getElementById('status').textContent = '認証が完了しました。このウィンドウを閉じてください。';
+                    document.getElementById('status').textContent = '認証が完了しました。\nこのウィンドウを閉じてください。';
                     document.getElementById('status').className = 'success';
                     
                     // 親ウィンドウに認証完了を通知

@@ -70,6 +70,16 @@ async def lifespan(_app: FastAPI):
     # 起動時の処理
     logger.info("Starting FastAPI application")
     
+    # 認証データベースを初期化
+    try:
+        from shared.auth.database_init import ensure_auth_database_initialized
+        if ensure_auth_database_initialized():
+            logger.info("Auth database initialized successfully")
+        else:
+            logger.warning("Failed to initialize auth database")
+    except Exception as e:
+        logger.error(f"Error initializing auth database: {e}")
+    
     # バックグラウンドタスクを開始
     try:
         background_task = asyncio.create_task(session_cleanup_task())
@@ -128,16 +138,16 @@ except Exception as e:
 
 
 # CORS設定を最初に適用（認証ミドルウェアより前に）
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=AppConfig.ALLOWED_ORIGINS,
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=AppConfig.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # # 認証ミドルウェアを追加（CORSの後に）
-# app.middleware("http")(auth_middleware)
+app.middleware("http")(auth_middleware)
 
 # 静的ファイルの設定（その他の静的ファイル用）
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -156,13 +166,12 @@ def get_current_user_id(request: Request = None) -> Optional[str]:
                 Noneの場合はMCP用の認証情報を使用
     
     Returns:
-        ユーザーID（email）またはNone
+        ユーザーID（google_user_id）またはNone
     """
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
         
-        # リクエストがある場合はセッションベース認証を優先
         if request is not None:
             from shared.auth.session_auth import get_session_auth_manager
             
@@ -170,16 +179,15 @@ def get_current_user_id(request: Request = None) -> Optional[str]:
             user_info = session_manager.get_user_info(request)
             
             if user_info:
-                return user_info.get("email", user_info.get("id"))
+                return user_info.get("id")
         
-        # フォールバックとしてMCP認証を使用
         from shared.auth.google_auth import get_auth_manager
         
         auth_manager = get_auth_manager()
         is_authenticated, user_info = auth_manager.check_auth_status()
         
         if is_authenticated and user_info:
-            return user_info.get("email", user_info.get("id"))
+            return user_info.get("id")
         
         return None
         
@@ -205,18 +213,21 @@ def get_current_adk_user_id(request: Request = None) -> str:
         from shared.auth.session_auth import get_session_auth_manager
         
         session_manager = get_session_auth_manager()
+
+        # Google User IDを直接取得
+        google_user_id = session_manager.get_google_user_id(request)
+
+        if google_user_id:
+            logger.debug(f"Using Google User ID as ADK user ID: {google_user_id}")
+            return google_user_id
+
+        # フォールバック: user_infoから取得を試みる
         user_info = session_manager.get_user_info(request)
-        
-        if user_info and user_info.get("email"):
-            # emailをベースにした安定的なuser_id（16文字）
-            email = user_info["email"]
-            adk_user_id = generate_adk_user_id(email)
-            
-            # デバッグログ
-            logger.debug(f"Generated ADK user ID: {adk_user_id} for email: {email[:5]}...")
-            
-            return adk_user_id
-        
+        if user_info and user_info.get("id"):
+            google_user_id = user_info["id"]
+            logger.debug(f"Got Google User ID from user_info: {google_user_id}")
+            return google_user_id
+
         return "anonymous"
         
     except Exception as e:
@@ -225,7 +236,7 @@ def get_current_adk_user_id(request: Request = None) -> str:
 
 # MCP認証用の互換性維持関数
 def get_current_user_id_for_mcp() -> Optional[str]:
-    """MCP認証用のユーザーIDを取得（互換性維持）"""
+    """MCP認証用のユーザーIDを取得"""
     return get_current_user_id(request=None)
 
 # 手動でOPTIONSリクエストに対応
@@ -237,6 +248,7 @@ async def options_handler():
 # ADK User ID endpoint moved to auth_routes.py
 
 # Google OAuth2.0コールバックエンドポイント
+# TODO リファクタリング筆頭
 @app.get("/auth/callback")
 async def oauth_callback(code: Optional[str] = None, error: Optional[str] = None):
     """Google OAuth2.0認証コールバック（セッションベース）"""
@@ -249,62 +261,42 @@ async def oauth_callback(code: Optional[str] = None, error: Optional[str] = None
     try:
         logger.info(f"Processing OAuth callback with code: {code[:20]}...")
         
-        # 認証コードをauth moduleに渡して処理
         import sys
         sys.path.append(os.path.dirname(__file__))
         from shared.auth.google_auth import get_auth_manager
         from shared.auth.session_auth import get_session_auth_manager
-        
-        # 一時的な認証マネージャーを使用してトークンを取得
+        from shared.auth.unified_session_manager import get_unified_session_manager
+
         temp_auth_manager = get_auth_manager()
         credentials = temp_auth_manager.process_authorization_code(code)
         
         if credentials:
-            # ユーザー情報を取得
             try:
                 from googleapiclient.discovery import build
                 service = build('oauth2', 'v2', credentials=credentials)
                 user_info = service.userinfo().get().execute()
-                
+
+                google_user_id = user_info.get("id")
+                if not google_user_id:
+                    raise Exception("Google User ID not found")
+
                 user_data = {
-                    "id": user_info.get("id"),
+                    "id": google_user_id,
                     "email": user_info.get("email"),
                     "name": user_info.get("name", user_info.get("email", "Unknown"))
                 }
+
+                unified_manager = get_unified_session_manager()
+                unified_session = unified_manager.create_unified_session(user_data, credentials)
+                session_id = unified_session["login_session_id"]
+ 
+                logger.debug("user_data!!!")
+                logger.debug(user_data)
+
+                user_auth_manager = get_auth_manager(google_user_id)
+                user_auth_manager._save_credentials(credentials)
+                logger.info(f"Credentials saved for MCP user (Google User ID): {google_user_id}")
                 
-                # セッション管理方式の選択
-                if USE_UNIFIED_SESSION_MANAGEMENT:
-                    # 統合セッション管理を使用（フォールバック付き）
-                    try:
-                        from shared.auth.unified_session_manager import get_unified_session_manager
-                        unified_manager = get_unified_session_manager()
-                        unified_session = unified_manager.create_unified_session(user_data, credentials)
-                        session_id = unified_session["login_session_id"]
-                        adk_user_id = unified_session["adk_user_id"]
-                        logger.info(f"Using unified session management")
-                    except Exception as e:
-                        logger.warning(f"Unified session failed, using sync manager: {e}")
-                        # フォールバック: 従来のセッション同期管理
-                        from shared.auth.session_sync_manager import get_session_sync_manager
-                        sync_manager = get_session_sync_manager()
-                        session_id, adk_user_id = sync_manager.on_login(user_data, credentials)
-                else:
-                    # 従来のセッション同期管理を使用
-                    from shared.auth.session_sync_manager import get_session_sync_manager
-                    sync_manager = get_session_sync_manager()
-                    session_id, adk_user_id = sync_manager.on_login(user_data, credentials)
-                    logger.info(f"Using sync session management")
-                
-                # MCP用の従来システムにも保存（ユーザー共通）
-                user_id = user_data.get("email", user_data.get("id"))
-                if user_id:
-                    user_auth_manager = get_auth_manager(user_id)
-                    user_auth_manager._save_credentials(credentials)
-                    logger.info(f"Credentials saved for MCP user: {user_id}")
-                
-                logger.info(f"Unified session created - Login: {session_id}, ADK user: {adk_user_id}")
-                
-                # セッションクッキー付きでリダイレクト
                 session_manager = get_session_auth_manager()
                 response = RedirectResponse(url=AppConfig.FRONTEND_REDIRECT_URL, status_code=302)
                 session_manager.set_session_cookie(response, session_id)
@@ -437,8 +429,9 @@ async def start_mcp_ada_oauth():
         sys.path.append(os.path.dirname(__file__))
         from shared.auth.mcp_ada_auth import get_mcp_ada_auth_manager
         
-        # MCP用のユーザーIDを取得（ユーザー共通）
         user_id = get_current_user_id_for_mcp()
+        logger.info("user_id!!!")
+        logger.info(user_id)
         if not user_id:
             return {
                 "success": False,
@@ -496,14 +489,15 @@ async def start_mcp_ada_oauth():
 
 # MCP ADA認証コールバックエンドポイント
 @app.post("/auth/mcp-ada/callback")
-async def mcp_ada_callback(request: dict):
-    """MCP ADA認証コールバック処理（ユーザー共通）"""
+async def mcp_ada_callback(request: dict, fastapi_request: Request):
+    """MCP ADA認証コールバック処理（ADKセッションに保存）"""
     try:
         import sys
         sys.path.append(os.path.dirname(__file__))
         from shared.auth.mcp_ada_auth import get_mcp_ada_auth_manager
-        
-        # MCP用のユーザーIDを取得（ユーザー共通）
+        from shared.services.credential_manager import MCPADACredentialManager
+        from shared.auth.mcp_ada_adk_auth import TOKEN_CACHE_KEY, REFRESH_TOKEN_CACHE_KEY
+
         user_id = get_current_user_id_for_mcp()
         if not user_id:
             return {
@@ -511,29 +505,64 @@ async def mcp_ada_callback(request: dict):
                 "message": "User not authenticated. Please login with Google first.",
                 "authenticated": False
             }
-        
-        # ユーザー固有の認証マネージャーを取得
+
         auth_manager = get_mcp_ada_auth_manager(user_id)
-        
-        # 認証コードを取得
+
         auth_code = request.get('code')
         state = request.get('state')
-        
+
         if not auth_code:
             return {
                 "success": False,
                 "message": "Authorization code not provided",
                 "authenticated": False
             }
-        
-        # 認証コードを処理してトークンを取得
+
         credentials = auth_manager.process_auth_code(auth_code, state)
-        
+
         if credentials:
+            logger.info(f"MCP ADA authentication completed for Google User ID: {user_id}")
+
+            # OAuth2Authオブジェクトを作成してファイルに保存（自動トークン更新対応）
+            try:
+                from google.adk.auth import OAuth2Auth
+                import json
+
+                # OAuth2Authオブジェクトを作成
+                expires_at = credentials.get('expires_at')
+                oauth2_auth = OAuth2Auth(
+                    client_id=auth_manager.client_id,
+                    client_secret=auth_manager.client_secret,
+                    access_token=credentials.get('access_token'),
+                    refresh_token=credentials.get('refresh_token'),
+                    expires_at=int(expires_at) if expires_at else None,
+                    auth_uri="https://mcp-server-ad-analyzer.adt-c1a.workers.dev/authorize",
+                    redirect_uri=auth_manager.redirect_uri
+                )
+
+                # OAuth2Authファイルパス（credentials_fileと同じディレクトリ）
+                oauth2_file = auth_manager.credentials_file.replace('credentials', 'oauth2_auth')
+
+                # OAuth2AuthをJSONファイルに保存
+                with open(oauth2_file, 'w') as f:
+                    json.dump(oauth2_auth.model_dump(), f, indent=2)
+
+                logger.info(f"✓ MCP ADA OAuth2Auth saved to file: {oauth2_file}")
+                logger.info(f"✓ Automatic token refresh enabled for Google User ID: {user_id}")
+
+            except Exception as e:
+                logger.error(f"Failed to save OAuth2Auth to file: {e}")
+                return {
+                    "success": False,
+                    "message": f"Failed to save authentication data: {str(e)}",
+                    "authenticated": False
+                }
+
             return {
                 "success": True,
-                "message": "MCP ADA authentication completed successfully",
-                "authenticated": True
+                "message": "MCP ADA authentication completed successfully with automatic token refresh",
+                "authenticated": True,
+                "google_user_id": user_id
             }
         else:
             return {
@@ -541,7 +570,7 @@ async def mcp_ada_callback(request: dict):
                 "message": "Failed to process authorization code",
                 "authenticated": False
             }
-        
+
     except Exception as e:
         logger.error(f"MCP ADA callback error: {e}")
         return {"error": f"Failed to process MCP ADA callback: {str(e)}"}

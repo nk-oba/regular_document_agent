@@ -9,13 +9,99 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioServerParameters
 from google.adk.tools.mcp_tool import StreamableHTTPConnectionParams
 from google.adk.tools.tool_context import ToolContext
+from google.auth.transport import Request
 from google.genai import types
+from shared.auth.oauth2_abstraction import OAuth2Credentials, create_oauth2_credentials
+from shared.auth.oauth2_config import get_token_uri
 
 from .sub_agents import slide_agent, playwright_agent, ds_agent
 
 # Add path to make auth module importable
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from shared.auth.google_auth import get_google_access_token
+from shared.auth.mcp_ada_adk_auth import (
+    get_mcp_ada_token_from_state,
+    TOKEN_CACHE_KEY
+)
+
+
+def resolve_mcp_user_id(adk_user_id: str) -> str:
+    """
+    Resolve ADK user_id (Google ID like '118276712451334561681') to MCP user_id (email)
+
+    Args:
+        adk_user_id: ADK user ID from tool_context.state or session
+
+    Returns:
+        Email address for MCP authentication, or adk_user_id if not found
+    """
+    try:
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        
+        # First, try to get email from auth_sessions.db
+        db_path = "auth_storage/auth_sessions.db"
+        if os.path.exists(db_path):
+            import sqlite3
+            
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Look up email from login_sessions joined with adk_sessions
+            cursor.execute("""
+                SELECT ls.email
+                FROM login_sessions ls
+                JOIN adk_sessions ads ON ls.id = ads.login_session_id
+                WHERE ads.adk_user_id = ?
+                ORDER BY ls.created_at DESC
+                LIMIT 1
+            """, (adk_user_id,))
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result and result[0]:
+                email = result[0]
+                logging.info(f"Resolved ADK user_id {adk_user_id} to email: {email}")
+                return email
+        
+        # Fallback: try to get email from session files
+        sessions_dir = "auth_storage/sessions/auth_sessions"
+        if os.path.exists(sessions_dir):
+            import json
+            import glob
+            
+            # Look for session files that might contain user info
+            session_files = glob.glob(os.path.join(sessions_dir, "*.json"))
+            
+            for session_file in session_files:
+                try:
+                    with open(session_file, 'r') as f:
+                        session_data = json.load(f)
+                    
+                    # Check if this session contains the user_id we're looking for
+                    user_info = session_data.get('user_info', {})
+                    if user_info.get('email'):
+                        # Generate ADK user ID from email to compare
+                        import hashlib
+                        normalized_email = user_info['email'].strip().lower()
+                        file_adk_user_id = hashlib.sha256(normalized_email.encode('utf-8')).hexdigest()[:16]
+                        
+                        if file_adk_user_id == adk_user_id:
+                            logging.info(f"Resolved ADK user_id {adk_user_id} to email from file: {user_info['email']}")
+                            return user_info['email']
+                            
+                except Exception as e:
+                    logging.debug(f"Failed to read session file {session_file}: {e}")
+                    continue
+        
+        logging.warning(f"Could not resolve ADK user_id {adk_user_id} to email, using as-is")
+        return adk_user_id
+
+    except Exception as e:
+        logging.error(f"Error resolving user_id: {e}")
+        return adk_user_id
 
 
 def get_tools():
@@ -26,98 +112,131 @@ def get_tools():
     tools.extend([
         # call_playwright_agent,
 
-        # make_mcp_authenticated_request_tool,
-        # check_mcp_auth_status_tool
+        make_mcp_authenticated_request_tool,
+        check_mcp_auth_status_tool,
 
         # generate_sample_csv_report,
 
-        # authenticate_mcp_server_tool,
-        # make_mcp_authenticated_request_tool,
-        # check_mcp_auth_status_tool
+        authenticate_mcp_server_tool,
+        make_mcp_authenticated_request_tool,
+        check_mcp_auth_status_tool
     ])
 
-    
-    # TODO: Replace with dynamic authentication
-    mcp_toolset = None
+
+    # Note: MCP ADA toolset initialization is now handled dynamically per-request
+    # using get_mcp_ada_tool(tool_context) which retrieves user-specific credentials
+    # from the ADK session state. This ensures each user gets their own authenticated
+    # MCP toolset rather than sharing a single static toolset.
+    #
+    # The authenticate_mcp_server_tool, check_mcp_auth_status_tool functions
+    # handle the authentication flow using tool_context.request_credential()
+    logging.info("MCP ADA toolset will be initialized per-request with user-specific credentials")
+    logging.info(f"Added {len(tools)} authentication and helper tools")
+
+    return tools
+
+
+# Fixed Google User ID for MCP ADA authentication
+FIXED_GOOGLE_USER_ID = "118276712451334561681"
+
+
+async def mcp_ada_tool(tool_context: Optional[ToolContext] = None):
+    """Initialize MCP ADA tool with OAuth2 authentication
+
+    Follows ADK standard authentication pattern:
+    1. Check for cached access token in tool_context.state
+    2. If not authenticated, request credential via tool_context.request_credential()
+    3. If authenticated, create MCPToolset with Bearer token header
+
+    Args:
+        tool_context: ADK tool context for authentication
+
+    Returns:
+        MCPToolset: Authenticated MCP ADA toolset or None if authentication pending
+    """
     try:
-        from shared.auth.mcp_ada_auth import get_mcp_ada_access_token
-        access_token = get_mcp_ada_access_token(user_id="usr0302483@login.gmo-ap.jp")
-        
+        from google.adk.auth import AuthConfig
+        from shared.auth.mcp_ada_adk_auth import (
+            create_mcp_ada_auth_scheme,
+            create_mcp_ada_auth_credential,
+            get_mcp_ada_token_from_state
+        )
+
+        # from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_toolset import OpenAPIToolset
+        # from fastapi.openapi.models import OAuth2
+        # from fastapi.openapi.models import OAuthFlowAuthorizationCode
+        # from fastapi.openapi.models import OAuthFlows
+        # from google.adk.auth import AuthCredential
+        # from google.adk.auth import AuthCredentialTypes
+        # from google.adk.auth import OAuth2Auth
+        import json
+
+        AD_ACCESS_TOKEN_KEY: str = "ada_access_token"
+        SCOPES: list[str] = ["mcp:reports", "mcp:properties"]
+
+        use_id: str = tool_context.state.get("user_id")
+        if not use_id:
+            raise ValueError("User ID is required")
+
+        # STEP1: キャッシュされたアクセストークンをチェック
+        access_token = None
+        cached_token_info = tool_context.state.get(AD_ACCESS_TOKEN_KEY)
+        if cached_token_info:
+            try:
+                token_data = json.loads(cached_token_info) if isinstance(cached_token_info, str) else cached_token_info
+                access_token = token_data.get('token')
+            except Exception as e:
+                logging.error(f"Failed to parse cached token: {e}")
+                access_token = None
+
         if access_token:
-            mcp_toolset = MCPToolset(
+            # キャッシュされたトークンでMCPToolsetを作成
+            toolset = MCPToolset(
                 connection_params=StreamableHTTPConnectionParams(
                     url="https://mcp-server-ad-analyzer.adt-c1a.workers.dev/mcp",
                     headers={"Authorization": f"Bearer {access_token}"}
                 )
             )
-            logging.info("MCP ADA toolset initialized with valid access token")
+            return toolset
         else:
-            logging.warning("No valid MCP ADA access token available. MCP tools will not be initialized.")
-            
-    except Exception as e:
-        logging.error(f"Failed to initialize MCP ADA toolset: {e}")
+            # STEP2: トークンが無効な場合、ファイルベースの認証システムから取得を試みる
+            try:
+                from shared.auth.mcp_ada_auth import get_mcp_ada_auth_manager
 
-    # Add MCP ADA toolset to tools (only if authenticated)
-    if mcp_toolset:
-        tools.append(mcp_toolset)
-        logging.info("MCP ADA toolset added to tools")
+                # ユーザーIDをメールアドレスに解決
+                mcp_user_id = resolve_mcp_user_id(use_id)
 
-    # # Import and add list_tools function
-    # try:
-    #     from list_tools import list_tools
-    #     tools.append(list_tools)
-    # except ImportError as e:
-    #     logging.warning(f"Failed to import list_tools: {e}")
-    
-    # Skip MCP tool initialization to prioritize server startup
-    logging.info("MCP tools will be initialized on first use (lazy loading)")
-    logging.info(f"Added {len(tools)} tools (including MCP toolset if authenticated)")
-    
-    # # If MCP ADA is authenticated, dynamically get actual tools from server
-    # try:
-    #     from mcp_dynamic_tools import create_mcp_ada_dynamic_tools
-    #     dynamic_mcp_tools = create_mcp_ada_dynamic_tools()
-        
-    #     if dynamic_mcp_tools:
-    #         tools.extend(dynamic_mcp_tools)
-    #         logging.info(f"Added {len(dynamic_mcp_tools)} dynamic MCP ADA tools to available tools")
-    #     else:
-    #         logging.info("No MCP ADA tools available or not authenticated")
-    # except Exception as e:
-    #     logging.warning(f"Failed to load dynamic MCP ADA tools: {e}")
-    
-    return tools
+                # ファイルベースの認証マネージャーからトークンを取得
+                auth_manager = get_mcp_ada_auth_manager(mcp_user_id)
+                access_token = auth_manager.get_access_token()
+
+                if not access_token:
+                    logging.warning(f"No valid token found for user {mcp_user_id}. Please authenticate via web interface.")
+                    return None
+
+                # トークンをキャッシュに保存
+                tool_context.state[AD_ACCESS_TOKEN_KEY] = json.dumps({
+                    'token': access_token,
+                    'refresh_token': None,
+                    'client_id': auth_manager.client_id or '',
+                    'client_secret': ''
+                })
+
+                # MCPToolsetを直接作成
+                toolset = MCPToolset(
+                    connection_params=StreamableHTTPConnectionParams(
+                        url="https://mcp-server-ad-analyzer.adt-c1a.workers.dev/mcp",
+                        headers={"Authorization": f"Bearer {access_token}"}
+                    )
+                )
+
+                return toolset
+
+            except Exception as e:
+                logging.error(f"Failed to get token from file storage: {e}")
+                return None
 
 
-def get_mcp_ada_tool():
-    """Safely initialize MCP ADA tool"""
-    try:
-        URL = "https://mcp-server-ad-analyzer.adt-c1a.workers.dev/mcp"
-        
-        # Get access token with Google OAuth2.0
-        access_token = get_google_access_token()
-        
-        if not access_token:
-            logging.warning("Failed to get Google access token. Please run authentication first.")
-            return None
-        
-        logging.debug(f"Initializing MCP ADA tool: {URL}")
-        logging.debug(f"Using access token: {access_token[:20]}..." if access_token else "No access token")
-        
-        # Debug: Log header information
-        headers = {"Authorization": f"Bearer {access_token}"}
-        logging.debug(f"Request headers: {headers}")
-        
-        toolset = MCPToolset(
-            connection_params=StreamableHTTPConnectionParams(
-                url=URL,
-                headers=headers,
-            )
-        )
-        
-        logging.info("MCP ADA tool initialized successfully")
-        return toolset
-        
     except Exception as e:
         logging.error(f"Failed to initialize MCP ADA tool: {str(e)}")
         import traceback
@@ -240,55 +359,66 @@ async def generate_sample_csv_report(tool_context):
 # ==============================================================================
 
 async def authenticate_mcp_server_tool(
-    tool_context,
-    server_url: str,
+    tool_context: ToolContext,
+    server_url: str = "https://mcp-server-ad-analyzer.adt-c1a.workers.dev/mcp",
     user_id: Optional[str] = None,
     scopes: Optional[list[str]] = None
 ):
     """
-    Tool to execute MCP ADA compliant OAuth 2.1 authentication
-    
+    Tool to execute MCP ADA compliant OAuth 2.1 authentication using ADK standard method
+
     Args:
-        tool_context: ADK tool context
+        tool_context: ADK tool context with session state
         server_url: MCP server URL to authenticate with
-        user_id: User ID (automatically retrieved from session if not specified)
+        user_id: User ID (automatically retrieved from tool_context if not specified)
         scopes: List of requested scopes (default: ["mcp:reports", "mcp:properties"])
-        
+
     Returns:
-        str: Authentication result message
+        dict: Authentication result with status and message
     """
     try:
-        # Auto-retrieve user ID from session info (if user_id is not specified)
+        # Get user ID from tool_context if not provided
         if user_id is None:
-            from session_user_helper import get_user_id_from_session
-            user_id = get_user_id_from_session(tool_context)
-        
-        # Import MCP authentication toolset
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        from mcp_client.mcp_toolset import authenticate_mcp_server_helper
-        
-        # Set MCP ADA specific scopes as default
-        if scopes is None:
-            scopes = ["mcp:reports", "mcp:properties"]
-        
-        logging.info(f"Authenticating to MCP server: {server_url} (user: {user_id}, scopes: {scopes})")
-        
-        # Execute MCP authentication
-        result = await authenticate_mcp_server_helper(server_url, user_id, scopes)
-        
-        logging.info(f"MCP authentication completed for {server_url}")
-        return result
-        
-    except ImportError as e:
-        error_msg = f"❌ MCP authentication tool is not available: {e}\n\n💡 Please verify that the MCP authentication framework is correctly installed."
-        logging.error(error_msg)
-        return error_msg
+            user_id = tool_context.state.get("user_id", "default")
+
+        # Check if already authenticated
+        access_token = get_mcp_ada_token_from_state(tool_context.state)
+
+        if access_token:
+            return {
+                'success': True,
+                'authenticated': True,
+                'message': f'Already authenticated for MCP ADA server (user: {user_id})'
+            }
+
+        # Direct user to web-based authentication
+        logging.info(f"MCP ADA authentication required for user: {user_id}")
+
+        auth_url = f"http://localhost:8000/auth/mcp-ada/start"
+
+        return {
+            'success': False,
+            'authenticated': False,
+            'message': f'Please authenticate via web interface: {auth_url}',
+            'auth_url': auth_url,
+            'instructions': [
+                f'1. Visit: {auth_url}',
+                '2. Complete OAuth2 flow',
+                '3. Retry this tool'
+            ]
+        }
+
+
     except Exception as e:
         error_msg = f"❌ Error occurred during MCP authentication: {str(e)}"
         logging.error(error_msg)
         import traceback
         traceback.print_exc()
-        return error_msg
+        return {
+            'success': False,
+            'error': True,
+            'message': error_msg
+        }
 
 
 async def make_mcp_authenticated_request_tool(
@@ -320,8 +450,11 @@ async def make_mcp_authenticated_request_tool(
     try:
         # Auto-retrieve user ID from session info (if user_id is not specified)
         if user_id is None:
-            from session_user_helper import get_user_id_from_session
-            user_id = get_user_id_from_session(tool_context)
+            user_id = tool_context.state.get("user_id", "default")
+        
+        # Resolve ADK user_id to MCP user_id (email)
+        mcp_user_id = resolve_mcp_user_id(user_id)
+        
         # Import MCP authentication toolset
         sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
         from mcp_client.mcp_toolset import mcp_request_helper
@@ -335,14 +468,14 @@ async def make_mcp_authenticated_request_tool(
         if query_params:
             kwargs["params"] = query_params
         
-        logging.info(f"Making authenticated request: {method} {server_url}{path} (user: {user_id})")
+        logging.info(f"Making authenticated request: {method} {server_url}{path} (user: {mcp_user_id})")
         
         # Execute MCP authenticated request
         result = await mcp_request_helper(
             server_url,
             method.upper(),
             path,
-            user_id,
+            mcp_user_id,
             **kwargs
         )
         
@@ -362,75 +495,81 @@ async def make_mcp_authenticated_request_tool(
 
 
 async def check_mcp_auth_status_tool(
-    tool_context,
-    server_url: str,
+    tool_context: ToolContext,
+    server_url: str = "https://mcp-server-ad-analyzer.adt-c1a.workers.dev/mcp",
     user_id: Optional[str] = None
 ):
     """
-    Tool to check MCP authentication status
-    
+    Tool to check MCP ADA authentication status using ADK session state
+
     Args:
-        tool_context: ADK tool context
+        tool_context: ADK tool context with session state
         server_url: MCP server URL
-        user_id: User ID (automatically retrieved from session if not specified)
-        
+        user_id: User ID (automatically retrieved from tool_context if not specified)
+
     Returns:
-        str: Authentication status information
+        dict: Authentication status information
     """
     try:
-        # Auto-retrieve user ID from session info (if user_id is not specified)
+        # logging.info("BBBBBBBBBB")
+        #  tool_context.stateの情報をデバッグ
+        logging.info(tool_context.state.to_dict())
+        # Get user ID from tool_context if not provided
         if user_id is None:
-            from session_user_helper import get_user_id_from_session
-            user_id = get_user_id_from_session(tool_context)
-        # Import MCP authentication toolset
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        from mcp_client.mcp_toolset import get_mcp_auth_toolset
-        
-        logging.info(f"Checking auth status for: {server_url} (user: {user_id})")
-        
-        # Check authentication status
-        auth_toolset = get_mcp_auth_toolset()
-        status_result = await auth_toolset.check_status(server_url, user_id)
-        
-        # Format result
-        if status_result.get("authenticated"):
-            result = f"""✅ Authentication status check completed
+            user_id = tool_context.state.get("user_id", "default")
 
-{status_result.get('result', '')}
+        # Resolve ADK user_id (Google ID) to MCP user_id (email)
+        mcp_user_id = resolve_mcp_user_id(user_id)
 
-💡 **Status**: Authenticated
-🌐 **Server**: {server_url}
-👤 **User**: {user_id}
-"""
+        logging.info(f"Checking MCP ADA auth status for user: {user_id} (resolved to: {mcp_user_id})")
+
+        # Check for access token in ADK session state
+        access_token = get_mcp_ada_token_from_state(tool_context.state)
+
+        # If not in session, try file-based storage with resolved email
+        if not access_token:
+            try:
+                from shared.auth.mcp_ada_auth import get_mcp_ada_access_token
+                access_token = get_mcp_ada_access_token(user_id=mcp_user_id)
+
+                if access_token:
+                    # Cache in session for future use
+                    tool_context.state[TOKEN_CACHE_KEY] = access_token
+                    logging.info(f"Loaded MCP ADA token from file storage for {mcp_user_id}")
+            except Exception as e:
+                logging.warning(f"Failed to check file storage: {e}")
+
+        if access_token:
+            return {
+                'authenticated': True,
+                'user_id': user_id,
+                'mcp_user_id': mcp_user_id,
+                'server_url': server_url,
+                'message': f'✅ Authenticated for MCP ADA (user: {mcp_user_id})',
+                'token_available': True
+            }
         else:
-            result = f"""❌ Authentication required
+            logging.info(f"MCP ADA authentication required for user {mcp_user_id}. Please authenticate via frontend.")
+            return {
+                'authenticated': False,
+                'user_id': user_id,
+                'mcp_user_id': mcp_user_id,
+                'server_url': server_url,
+                'message': f'❌ Not authenticated for MCP ADA (user: {mcp_user_id}). Please run authentication first.',
+                'token_available': False,
+                'auth_url': 'http://localhost:8000/auth/mcp-ada/start'
+            }
 
-🌐 **Server**: {server_url}
-👤 **User**: {user_id}
-🔐 **Status**: Not authenticated
-
-💡 **Next step**: 
-```
-authenticate_mcp_server_tool("{server_url}", "{user_id}")
-```
-Please run to authenticate.
-
-Error details: {status_result.get('error', 'Unknown error')}
-"""
-        
-        logging.info(f"Auth status check completed for {server_url}")
-        return result
-        
-    except ImportError as e:
-        error_msg = f"❌ MCP authentication tool is not available: {e}\n\n💡 Please verify that the MCP authentication framework is correctly installed."
-        logging.error(error_msg)
-        return error_msg
     except Exception as e:
         error_msg = f"❌ Error occurred during MCP authentication status check: {str(e)}"
         logging.error(error_msg)
         import traceback
         traceback.print_exc()
-        return error_msg
+        return {
+            'error': True,
+            'authenticated': False,
+            'message': error_msg
+        }
 
 
 
