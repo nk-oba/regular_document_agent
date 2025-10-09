@@ -16,7 +16,7 @@
 import os
 from google.adk.code_executors import VertexAiCodeExecutor
 from google.adk.agents import Agent
-from .prompts import return_instructions_ds
+from .prompt import return_instructions_ds
 
 
 root_agent = Agent(

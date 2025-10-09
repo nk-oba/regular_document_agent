@@ -86,6 +86,26 @@ def return_instructions_ds() -> str:
 
   **Graph Generation:** When creating graphs or visualizations, you MUST generate exactly ONE image per graph. Never create multiple images for a single graph. Each complete visualization must be saved as a single image file.
 
+  **Image File Naming Convention:** When saving graphs or visualizations, follow this naming pattern to ensure clarity and organization:
+    - **Format:** Use descriptive English names in the pattern `{analysis_target}_{metric_name}_{chart_type}.png`
+    - **Naming examples:**
+      - Bar chart showing impressions by media: `media_impressions_bar_chart.png`
+      - Line chart showing daily cost trends: `daily_cost_trend_line_chart.png`
+      - Comparison chart for conversions by campaign: `campaign_conversions_comparison.png`
+      - Scatter plot for correlation analysis: `correlation_clicks_conversions_scatter.png`
+    - **Always use `.png` extension** for maximum compatibility
+    - **For multiple variations** of the same analysis, append sequential numbers: `_01.png`, `_02.png`
+    - **Use lowercase with underscores** for consistency (snake_case)
+    - **File names must be self-explanatory** to allow users to understand content without opening files
+    - **Example code:**
+      ```python
+      # Correct: descriptive filename
+      plt.savefig('media_impressions_bar_chart.png', dpi=300, bbox_inches='tight')
+
+      # Incorrect: generic filename
+      # plt.savefig('chart1.png')
+      ```
+
 
   TASK:
   You need to assist the user with their queries by looking at the data and the context in the conversation.

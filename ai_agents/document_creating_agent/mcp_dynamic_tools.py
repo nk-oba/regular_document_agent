@@ -243,8 +243,9 @@ def _fetch_mcp_tools_list(user_id: str, tool_context=None) -> Optional[List[Dict
             json=init_request,
             timeout=30
         )
-        
+
         if response.status_code != 200:
+            response.encoding = 'utf-8'
             logger.error(f"MCP initialize failed: {response.status_code} - {response.text}")
             return None
             
@@ -277,17 +278,19 @@ def _fetch_mcp_tools_list(user_id: str, tool_context=None) -> Optional[List[Dict
             json=tools_request,
             timeout=30
         )
-        
+
         if response.status_code == 200:
             # Server-Sent Eventsフォーマットの応答を解析
+            # UTF-8エンコーディングを明示的に指定して文字化けを防ぐ
+            response.encoding = 'utf-8'
             response_text = response.text.strip()
-            
+
             # SSE形式から実際のJSONを抽出
             # "data: {...}" 行を探す
             data_match = re.search(r'data:\s*({.*})', response_text)
             if data_match:
                 data = json_module.loads(data_match.group(1))
-                
+
                 if "result" in data and "tools" in data["result"]:
                     tools_list = data["result"]["tools"]
                     logger.info(f"Retrieved {len(tools_list)} tools from MCP ADA server")
@@ -299,6 +302,7 @@ def _fetch_mcp_tools_list(user_id: str, tool_context=None) -> Optional[List[Dict
                 logger.error(f"Failed to parse SSE response: {response_text[:200]}...")
                 return None
         else:
+            response.encoding = 'utf-8'
             logger.warning(f"Failed to fetch MCP tools: {response.status_code} - {response.text}")
             return None
             
@@ -553,6 +557,7 @@ def _create_adk_function_from_mcp_tool(tool_def: Dict, user_id: str) -> Optional
                 logger.debug(f"[MCP ADA] Init response: {response.status_code}")
 
                 if response.status_code != 200:
+                    response.encoding = 'utf-8'
                     error_msg = f"❌ MCP初期化エラー: {response.status_code} - {response.text}"
                     logger.error(f"[MCP ADA] {error_msg}")
                     return error_msg
@@ -590,7 +595,7 @@ def _create_adk_function_from_mcp_tool(tool_def: Dict, user_id: str) -> Optional
                 logger.info(f"[MCP ADA] Tool request: {json_module.dumps(tool_request, indent=2)}")
 
                 # レポート取得は時間がかかる可能性があるため、タイムアウトを延長
-                timeout_seconds = 180 if tool_name == "ada_get_report" else 60
+                timeout_seconds = 900 if tool_name == "ada_get_report" else 60
                 logger.info(f"[MCP ADA] Executing tool with timeout: {timeout_seconds}s")
 
                 response = requests.post(
@@ -599,9 +604,10 @@ def _create_adk_function_from_mcp_tool(tool_def: Dict, user_id: str) -> Optional
                     json=tool_request,
                     timeout=timeout_seconds
                 )
-                
+
                 if response.status_code == 200:
                     # Server-Sent Eventsフォーマットの応答を解析
+                    response.encoding = 'utf-8'
                     response_text = response.text.strip()
                     
                     # SSE形式から実際のJSONを抽出
@@ -640,6 +646,7 @@ def _create_adk_function_from_mcp_tool(tool_def: Dict, user_id: str) -> Optional
                     else:
                         return f"❌ SSE応答解析エラー: {response_text[:200]}..."
                 else:
+                    response.encoding = 'utf-8'
                     error_msg = f"❌ MCPツール実行エラー: {response.status_code} - {response.text}"
                     logger.error(error_msg)
                     return error_msg

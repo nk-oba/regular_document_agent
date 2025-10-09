@@ -207,7 +207,7 @@ root_agent = LlmAgent(
     # sub_agents=[
     #     ds_agent,
     # ],
-    tools=_agent_tools,  # 関数を呼び出してツールリストを取得
+    tools=_agent_tools,
     generate_content_config=types.GenerateContentConfig(temperature=0.01),
 )
 
