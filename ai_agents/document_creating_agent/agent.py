@@ -85,6 +85,7 @@ def store_results_in_tool_context(
     tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext, tool_response: Dict
 ) -> Optional[Dict]:
     """Store the results in the tool context."""
+    print(tool_context)
     print(tool_response)
 
     if tool.name == EXECUTE_GET_AD_REPORT:
@@ -92,7 +93,6 @@ def store_results_in_tool_context(
         if tool_response['status'] == "SUCCESS":
             tool_context.state["csv_report_output"] = tool_response['data']
 
-    # Handle MCP tool responses with error checking
     if tool.name == EXECUTE_MCP_ADA_GET_CLIENT_LIST:
         # Check if response is an error message
         if isinstance(tool_response, str) and tool_response.startswith("❌"):
@@ -122,7 +122,22 @@ def store_results_in_tool_context(
             return tool_response
         try:
             json_data = json.loads(tool_response)
-            tool_context.state["ad_report"] = json_data
+            if isinstance(json_data, dict) and "record" in json_data:
+                record = json_data.get("record", [])
+                if record and len(record) > 0:
+                    first_record = record[0]
+                    if "report_day" in first_record:
+                        tool_context.state["ad_report_report_day"] = json_data
+                    elif "media" in first_record:
+                        tool_context.state["ad_report_report_media"] = json_data
+                    elif "campaign" in first_record:
+                        tool_context.state["ad_report_report_campaign"] = json_data
+                    else:
+                        pass
+                else:
+                    pass
+            else:
+                tool_context.state["ad_report"] = json_data
         except json.JSONDecodeError as e:
             logging.error(f"Failed to parse ad_report response: {e}")
             return tool_response
