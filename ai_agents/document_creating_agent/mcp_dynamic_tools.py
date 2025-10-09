@@ -589,11 +589,15 @@ def _create_adk_function_from_mcp_tool(tool_def: Dict, user_id: str) -> Optional
 
                 logger.info(f"[MCP ADA] Tool request: {json_module.dumps(tool_request, indent=2)}")
 
+                # レポート取得は時間がかかる可能性があるため、タイムアウトを延長
+                timeout_seconds = 180 if tool_name == "ada_get_report" else 60
+                logger.info(f"[MCP ADA] Executing tool with timeout: {timeout_seconds}s")
+
                 response = requests.post(
                     f"{mcp_server_url}/mcp",
                     headers=session_headers,
                     json=tool_request,
-                    timeout=60
+                    timeout=timeout_seconds
                 )
                 
                 if response.status_code == 200:

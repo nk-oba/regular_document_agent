@@ -44,7 +44,10 @@ def return_instructions_ds() -> str:
   import numpy as np
   import pandas as pd
   import scipy
+  import japanize_matplotlib
   ```
+
+  **Japanese Font Support:** japanize-matplotlib is ALREADY imported and configured. This ensures that all matplotlib plots will display Japanese characters correctly. You should NEVER import japanize-matplotlib again, as it is already available in the environment.
 
   **Output Visibility:** Always print the output of code execution to visualize results, especially for data exploration and analysis. For example:
     - To look a the shape of a pandas.DataFrame do:

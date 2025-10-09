@@ -461,7 +461,7 @@ async def call_ds_agent(
         await progress_callback("cache_hit", "Returning cached result")
         return tool_context.state.get("ds_agent_output", "No previous data science agent output available")
 
-    input_data = tool_context.state.get("csv_report_output")
+    input_data = tool_context.state.get("ad_report")
     question_with_data = f"""
   Question to answer: {question}
 

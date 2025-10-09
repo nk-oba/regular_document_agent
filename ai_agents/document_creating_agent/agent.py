@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from typing import Any, Dict, Optional
@@ -20,7 +21,10 @@ from .mcp_dynamic_tools import create_mcp_ada_dynamic_tools
 from .sub_agents import ds_agent
 
 EXECUTE_GET_AD_REPORT: str = "execute_get_ad_report"
+EXECUTE_MCP_ADA_GET_CLIENT_LIST: str = "mcp_ada_get_client_list"
+EXECUTE_MCP_ADA_GET_CLIENT_INFO: str = "mcp_ada_get_client_info"
 EXECUTE_MCP_ADA_GET_REPORT: str = "mcp_ada_get_report"
+EXECUTE_CALL_DS_AGENT: str = "call_ds_agent"
 
 load_dotenv()
 
@@ -70,6 +74,7 @@ def setup_before_to_call_tools(tool: BaseTool, args: Dict[str, Any], tool_contex
     if logging.getLogger().isEnabledFor(logging.DEBUG):
         logging.debug(f"Tool arguments: {args}")
 
+
     # Note: Authentication checks are implemented within tool functions:
     # - authenticate_mcp_server_tool: Handles authentication flow
     # - check_mcp_auth_status_tool: Checks and returns auth status
@@ -80,13 +85,48 @@ def store_results_in_tool_context(
     tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext, tool_response: Dict
 ) -> Optional[Dict]:
     """Store the results in the tool context."""
+    print(tool_response)
+
     if tool.name == EXECUTE_GET_AD_REPORT:
         print(tool_response)
         if tool_response['status'] == "SUCCESS":
             tool_context.state["csv_report_output"] = tool_response['data']
-    elif tool.name == EXECUTE_MCP_ADA_GET_REPORT:
-        print(tool_response)
-        tool_context.state["mcp_ada_report_output"] = tool_response['result']
+
+    # Handle MCP tool responses with error checking
+    if tool.name == EXECUTE_MCP_ADA_GET_CLIENT_LIST:
+        # Check if response is an error message
+        if isinstance(tool_response, str) and tool_response.startswith("❌"):
+            logging.error(f"MCP tool error: {tool_response}")
+            return tool_response
+        try:
+            json_data = json.loads(tool_response)
+            tool_context.state["client_list"] = json_data
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse client_list response: {e}")
+            return tool_response
+
+    if tool.name == EXECUTE_MCP_ADA_GET_CLIENT_INFO:
+        if isinstance(tool_response, str) and tool_response.startswith("❌"):
+            logging.error(f"MCP tool error: {tool_response}")
+            return tool_response
+        try:
+            json_data = json.loads(tool_response)
+            tool_context.state["client_info"] = json_data
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse client_info response: {e}")
+            return tool_response
+
+    if tool.name == EXECUTE_MCP_ADA_GET_REPORT:
+        if isinstance(tool_response, str) and tool_response.startswith("❌"):
+            logging.error(f"MCP tool error: {tool_response}")
+            return tool_response
+        try:
+            json_data = json.loads(tool_response)
+            tool_context.state["ad_report"] = json_data
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse ad_report response: {e}")
+            return tool_response
+ 
     return tool_response    
 
 
@@ -161,7 +201,7 @@ root_agent = LlmAgent(
     description=(
         "広告運用に関する報告資料を作成するエージェント"
     ),
-    # instruction=prompt.AD_REPORT_PROMPT,
+    instruction=prompt.AD_REPORT_PROMPT,
     before_tool_callback=setup_before_to_call_tools,
     after_tool_callback=store_results_in_tool_context,
     # sub_agents=[
