@@ -143,119 +143,49 @@ def _find_authenticated_user_id() -> str:
 
 def _fetch_mcp_tools_list(user_id: str, tool_context=None) -> Optional[List[Dict]]:
     """
-    MCP ADAサーバーからツール一覧を取得（OAuth2自動更新対応）
+    MCP ADAサーバーからツール一覧を取得（セッション再利用・トークンキャッシュ対応）
 
     Args:
         user_id: Google User ID
-        tool_context: ADK tool context（自動トークン更新に使用）
+        tool_context: ADK tool context（未使用、互換性のため保持）
 
     Returns:
         Optional[List[Dict]]: MCPツール定義のリスト
     """
     try:
-        # OAuth2自動更新機能を使用してトークンを取得
-        from google.adk.auth import OAuth2Auth
-        from google.oauth2.credentials import Credentials
-        from google.auth.transport.requests import Request as GoogleAuthRequest
-        import time
+        # トークンマネージャーとセッションマネージャーをインポート
+        from .oauth2_token_manager import get_token_manager
+        from .mcp_session_manager import get_session_manager
         import json as json_module
-        import os
+        import requests
+        import re
 
-        # OAuth2Authファイルから読み込み
-        oauth2_file = f"auth_storage/mcp_ada_auth/mcp_ada_oauth2_auth_{user_id}.json"
+        token_manager = get_token_manager()
+        session_manager = get_session_manager()
+        mcp_server_url = "https://mcp-server-ad-analyzer.adt-c1a.workers.dev"
 
-        if not os.path.exists(oauth2_file):
-            logger.warning(f"No OAuth2Auth file found for user {user_id}")
-            return None
-
-        with open(oauth2_file, 'r') as f:
-            oauth2_data = json_module.load(f)
-
-        oauth2_auth = OAuth2Auth(**oauth2_data)
-
-        # トークンの有効期限チェックと自動更新
-        if oauth2_auth.expires_at and time.time() >= oauth2_auth.expires_at:
-            logger.info("MCP ADA token expired, refreshing...")
-
-            if not oauth2_auth.refresh_token:
-                logger.error("No refresh token available")
-                return None
-
-            # トークン更新
-            creds = Credentials(
-                token=oauth2_auth.access_token,
-                refresh_token=oauth2_auth.refresh_token,
-                token_uri="https://mcp-server-ad-analyzer.adt-c1a.workers.dev/token",
-                client_id=oauth2_auth.client_id,
-                client_secret=oauth2_auth.client_secret
-            )
-
-            creds.refresh(GoogleAuthRequest())
-
-            # OAuth2Authを更新
-            oauth2_auth.access_token = creds.token
-            oauth2_auth.expires_at = int(creds.expiry.timestamp()) if creds.expiry else None
-
-            # ファイルに保存
-            with open(oauth2_file, 'w') as f:
-                json_module.dump(oauth2_auth.model_dump(), f, indent=2)
-
-            logger.info("✓ Token refreshed for MCP tools list fetch")
-
-        access_token = oauth2_auth.access_token
+        # トークンを取得（自動リフレッシュ対応）
+        logger.debug(f"[MCP ADA] Getting access token for tools list (user: {user_id})")
+        access_token = token_manager.get_token(user_id, auto_refresh=True)
 
         if not access_token:
             logger.warning(f"No valid access token for user {user_id}")
             return None
-            
-        # MCPサーバーに対してMCPプロトコルフローを実行
-        import requests
-        import re
-        
-        mcp_server_url = "https://mcp-server-ad-analyzer.adt-c1a.workers.dev"
-        
-        # 1. MCP初期化リクエスト（セッションIDなし）
-        init_headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream"
-        }
-        
-        init_request = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "tools": {}
-                },
-                "clientInfo": {
-                    "name": "document_creating_agent",
-                    "version": "1.0.0"
-                }
-            }
-        }
-        
-        response = requests.post(
-            f"{mcp_server_url}/mcp",
-            headers=init_headers,
-            json=init_request,
+
+        # セッションを取得または作成（再利用対応）
+        logger.debug(f"[MCP ADA] Getting or creating MCP session for tools list (user: {user_id})")
+        session_id = session_manager.get_or_create_session(
+            user_id=user_id,
+            access_token=access_token,
+            mcp_server_url=mcp_server_url,
             timeout=30
         )
 
-        if response.status_code != 200:
-            response.encoding = 'utf-8'
-            logger.error(f"MCP initialize failed: {response.status_code} - {response.text}")
-            return None
-            
-        # セッションIDをレスポンスヘッダーから取得
-        session_id = response.headers.get('mcp-session-id')
         if not session_id:
-            logger.error("No session ID returned from MCP server")
+            logger.error("Failed to get or create MCP session for tools list")
             return None
-            
-        logger.info(f"MCP session initialized: {session_id}")
+
+        logger.info(f"MCP session for tools list: {session_id[:16]}...")
         
         # 2. tools/listリクエスト（セッションID付き）
         session_headers = {
@@ -442,7 +372,7 @@ def _create_adk_function_from_mcp_tool(tool_def: Dict, user_id: str) -> Optional
         # 実際の実装を行う内部関数（クロージャで変数をキャプチャ）
         async def _execute_mcp_tool(**actual_params):
             """
-            動的生成されたMCPツール呼び出し関数（OAuth2自動更新対応）
+            動的生成されたMCPツール呼び出し関数（セッション再利用・トークンキャッシュ対応）
             """
             logger.info(f"[MCP ADA] ========================================")
             logger.info(f"[MCP ADA] Tool invocation started: {tool_name}")
@@ -458,121 +388,57 @@ def _create_adk_function_from_mcp_tool(tool_def: Dict, user_id: str) -> Optional
             logger.info(f"[MCP ADA] Tool context provided: {tool_context is not None}")
 
             try:
-                # OAuth2自動更新機能を使用してトークンを取得
-                from google.adk.auth import OAuth2Auth
-                from google.oauth2.credentials import Credentials
-                from google.auth.transport.requests import Request as GoogleAuthRequest
-                import time
+                # トークンマネージャーとセッションマネージャーをインポート
+                from .oauth2_token_manager import get_token_manager
+                from .mcp_session_manager import get_session_manager
                 import json as json_module
-                import os
-
-                # OAuth2Authファイルから読み込み
-                oauth2_file = f"auth_storage/mcp_ada_auth/mcp_ada_oauth2_auth_{user_id}.json"
-                logger.debug(f"[MCP ADA] Looking for OAuth2 file: {oauth2_file}")
-
-                if not os.path.exists(oauth2_file):
-                    error_msg = f"❌ 認証エラー: {tool_name}の実行に必要な認証情報がありません（ファイルなし）"
-                    logger.error(f"[MCP ADA] {error_msg}")
-                    return error_msg
-
-                logger.debug(f"[MCP ADA] Reading OAuth2 credentials from file")
-                with open(oauth2_file, 'r') as f:
-                    oauth2_data = json_module.load(f)
-
-                oauth2_auth = OAuth2Auth(**oauth2_data)
-                logger.debug(f"[MCP ADA] OAuth2 auth loaded, expires_at: {oauth2_auth.expires_at}")
-
-                # トークンの有効期限チェックと自動更新
-                if oauth2_auth.expires_at and time.time() >= oauth2_auth.expires_at:
-                    logger.info(f"Token expired for {tool_name}, refreshing...")
-
-                    if not oauth2_auth.refresh_token:
-                        return f"❌ 認証エラー: リフレッシュトークンがありません"
-
-                    # トークン更新
-                    creds = Credentials(
-                        token=oauth2_auth.access_token,
-                        refresh_token=oauth2_auth.refresh_token,
-                        token_uri="https://mcp-server-ad-analyzer.adt-c1a.workers.dev/token",
-                        client_id=oauth2_auth.client_id,
-                        client_secret=oauth2_auth.client_secret
-                    )
-
-                    creds.refresh(GoogleAuthRequest())
-
-                    # OAuth2Authを更新
-                    oauth2_auth.access_token = creds.token
-                    oauth2_auth.expires_at = int(creds.expiry.timestamp()) if creds.expiry else None
-
-                    # ファイルに保存
-                    with open(oauth2_file, 'w') as f:
-                        json_module.dump(oauth2_auth.model_dump(), f, indent=2)
-
-                    logger.info(f"✓ Token refreshed for {tool_name}")
-
-                access_token = oauth2_auth.access_token
-
-                if not access_token:
-                    return f"❌ 認証エラー: {tool_name}の実行に必要な認証情報がありません"
-                
-                # MCPサーバーでセッションを初期化してツールを実行
                 import requests
                 import re
 
+                token_manager = get_token_manager()
+                session_manager = get_session_manager()
                 mcp_server_url = "https://mcp-server-ad-analyzer.adt-c1a.workers.dev"
-                logger.info(f"[MCP ADA] Starting MCP session for tool: {tool_name}")
 
-                # 1. MCP初期化リクエスト
-                init_headers = {
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream"
-                }
-                logger.debug(f"[MCP ADA] Init headers prepared (token length: {len(access_token)})")
-                
-                init_request = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {
-                            "tools": {}
-                        },
-                        "clientInfo": {
-                            "name": "document_creating_agent",
-                            "version": "1.0.0"
-                        }
-                    }
-                }
-                
-                logger.debug(f"[MCP ADA] Sending initialization request to {mcp_server_url}/mcp")
-                response = requests.post(
-                    f"{mcp_server_url}/mcp",
-                    headers=init_headers,
-                    json=init_request,
+                # トークンを取得（自動リフレッシュ対応）
+                logger.debug(f"[MCP ADA] Getting access token for user: {user_id}")
+                access_token = token_manager.get_token(user_id, auto_refresh=True)
+
+                if not access_token:
+                    error_msg = f"❌ 認証エラー: {tool_name}の実行に必要な認証情報がありません"
+                    logger.error(f"[MCP ADA] {error_msg}")
+                    return error_msg
+
+                logger.debug(f"[MCP ADA] Access token obtained (length: {len(access_token)})")
+
+                # セッションを取得または作成（再利用対応）
+                logger.debug(f"[MCP ADA] Getting or creating MCP session for user: {user_id}")
+                session_id = session_manager.get_or_create_session(
+                    user_id=user_id,
+                    access_token=access_token,
+                    mcp_server_url=mcp_server_url,
                     timeout=30
                 )
 
-                logger.debug(f"[MCP ADA] Init response: {response.status_code}")
-
-                if response.status_code != 200:
-                    response.encoding = 'utf-8'
-                    error_msg = f"❌ MCP初期化エラー: {response.status_code} - {response.text}"
-                    logger.error(f"[MCP ADA] {error_msg}")
-                    return error_msg
-
-                # セッションIDを取得
-                session_id = response.headers.get('mcp-session-id')
-                logger.debug(f"[MCP ADA] Session ID from headers: {session_id}")
-
                 if not session_id:
-                    error_msg = f"❌ セッションID取得エラー"
-                    logger.error(f"[MCP ADA] {error_msg}")
-                    logger.debug(f"[MCP ADA] Response headers: {dict(response.headers)}")
-                    return error_msg
+                    # セッションキャッシュを無効化して再試行
+                    logger.warning(f"[MCP ADA] Initial session creation failed, invalidating cache and retrying")
+                    session_manager.invalidate_session(user_id)
 
-                logger.info(f"[MCP ADA] Session initialized: {session_id}")
+                    session_id = session_manager.create_session(
+                        user_id=user_id,
+                        access_token=access_token,
+                        mcp_server_url=mcp_server_url,
+                        timeout=30
+                    )
+
+                    if not session_id:
+                        error_msg = f"❌ セッション取得エラー: MCPセッションの作成に失敗しました（リトライ後も失敗）"
+                        logger.error(f"[MCP ADA] {error_msg}")
+                        return error_msg
+
+                    logger.info(f"[MCP ADA] ✓ Session created after retry")
+
+                logger.info(f"[MCP ADA] Using session: {session_id[:16]}...")
                 
                 # 2. ツール実行リクエスト
                 session_headers = {
@@ -649,6 +515,14 @@ def _create_adk_function_from_mcp_tool(tool_def: Dict, user_id: str) -> Optional
                     response.encoding = 'utf-8'
                     error_msg = f"❌ MCPツール実行エラー: {response.status_code} - {response.text}"
                     logger.error(error_msg)
+
+                    # セッション無効エラー（401, 403）の場合はセッションを無効化
+                    if response.status_code in [401, 403]:
+                        logger.warning(f"[MCP ADA] Session authentication error, invalidating session for user: {user_id}")
+                        session_manager.invalidate_session(user_id)
+                        # トークンも無効化して次回リフレッシュさせる
+                        token_manager.invalidate_token(user_id)
+
                     return error_msg
                     
             except Exception as e:

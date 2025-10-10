@@ -19,6 +19,7 @@ from .tools import (
 )
 from .mcp_dynamic_tools import create_mcp_ada_dynamic_tools
 from .sub_agents import ds_agent
+from .cache_cleanup_scheduler import start_cache_cleanup
 
 EXECUTE_GET_AD_REPORT: str = "execute_get_ad_report"
 EXECUTE_MCP_ADA_GET_CLIENT_LIST: str = "mcp_ada_get_client_list"
@@ -85,7 +86,6 @@ def store_results_in_tool_context(
     tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext, tool_response: Dict
 ) -> Optional[Dict]:
     """Store the results in the tool context."""
-    print(tool_context)
     print(tool_response)
 
     if tool.name == EXECUTE_GET_AD_REPORT:
@@ -132,6 +132,10 @@ def store_results_in_tool_context(
                         tool_context.state["ad_report_report_media"] = json_data
                     elif "campaign" in first_record:
                         tool_context.state["ad_report_report_campaign"] = json_data
+                    elif "keyword" in first_record:
+                        tool_context.state["ad_report_report_keyword"] = json_data
+                    elif "search_query" in first_record:
+                        tool_context.state["ad_report_report_search_query"] = json_data
                     else:
                         pass
                 else:
@@ -234,3 +238,10 @@ if hasattr(root_agent, 'model') and hasattr(root_agent.model, 'tools'):
         logging.info(f"  {idx}. {type(tool).__name__}: {getattr(tool, 'name', 'unknown')}")
 else:
     logging.warning("root_agent.model.tools not accessible")
+
+# キャッシュクリーンアップスケジューラーを起動（1時間ごと）
+try:
+    start_cache_cleanup(cleanup_interval=3600)
+    logging.info("✓ Cache cleanup scheduler started (interval: 3600s)")
+except Exception as e:
+    logging.warning(f"Failed to start cache cleanup scheduler: {e}")
