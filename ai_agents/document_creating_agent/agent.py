@@ -1,3 +1,4 @@
+from array import array
 import json
 import logging
 import os
@@ -22,7 +23,6 @@ from .sub_agents import ds_agent
 from .cache_cleanup_scheduler import start_cache_cleanup
 
 EXECUTE_GET_AD_REPORT: str = "execute_get_ad_report"
-EXECUTE_MCP_ADA_GET_CLIENT_LIST: str = "mcp_ada_get_client_list"
 EXECUTE_MCP_ADA_GET_CLIENT_INFO: str = "mcp_ada_get_client_info"
 EXECUTE_MCP_ADA_GET_REPORT: str = "mcp_ada_get_report"
 EXECUTE_CALL_DS_AGENT: str = "call_ds_agent"
@@ -93,18 +93,6 @@ def store_results_in_tool_context(
         if tool_response['status'] == "SUCCESS":
             tool_context.state["csv_report_output"] = tool_response['data']
 
-    if tool.name == EXECUTE_MCP_ADA_GET_CLIENT_LIST:
-        # Check if response is an error message
-        if isinstance(tool_response, str) and tool_response.startswith("❌"):
-            logging.error(f"MCP tool error: {tool_response}")
-            return tool_response
-        try:
-            json_data = json.loads(tool_response)
-            tool_context.state["client_list"] = json_data
-        except json.JSONDecodeError as e:
-            logging.error(f"Failed to parse client_list response: {e}")
-            return tool_response
-
     if tool.name == EXECUTE_MCP_ADA_GET_CLIENT_INFO:
         if isinstance(tool_response, str) and tool_response.startswith("❌"):
             logging.error(f"MCP tool error: {tool_response}")
@@ -123,25 +111,41 @@ def store_results_in_tool_context(
         try:
             json_data = json.loads(tool_response)
             if isinstance(json_data, dict) and "record" in json_data:
+                if "ad_reports" not in tool_context.state:
+                    tool_context.state["ad_reports"] = {}
+
                 record = json_data.get("record", [])
                 if record and len(record) > 0:
                     first_record = record[0]
+
+                    report_type = None
                     if "report_day" in first_record:
-                        tool_context.state["ad_report_report_day"] = json_data
+                        report_type = "daily_report"
                     elif "media" in first_record:
-                        tool_context.state["ad_report_report_media"] = json_data
+                        report_type = "media_report"
                     elif "campaign" in first_record:
-                        tool_context.state["ad_report_report_campaign"] = json_data
+                        report_type = "campaign_report"
                     elif "keyword" in first_record:
-                        tool_context.state["ad_report_report_keyword"] = json_data
+                        report_type = "keyword_report"
                     elif "search_query" in first_record:
-                        tool_context.state["ad_report_report_search_query"] = json_data
+                        report_type = "search_query_report"
+
+                    if report_type:
+                        if report_type not in tool_context.state["ad_reports"]:
+                            tool_context.state["ad_reports"][report_type] = []
+                        tool_context.state["ad_reports"][report_type].extend(record)
+                        logging.info(f"Stored {len(record)} records in {report_type}")
                     else:
-                        pass
+                        logging.warning(f"Unknown report type in first_record: {list(first_record.keys())}")
+                        if "ad_report_unknown" not in tool_context.state["ad_reports"]:
+                            tool_context.state["ad_reports"]["ad_report_unknown"] = []
+                        tool_context.state["ad_reports"]["ad_report_unknown"].extend(record)
                 else:
-                    pass
+                    logging.warning("Empty record array in ad_report response")
             else:
-                tool_context.state["ad_report"] = json_data
+                if "ad_reports" not in tool_context.state:
+                    tool_context.state["ad_reports"] = {}
+                tool_context.state["ad_reports"]["ad_report"] = json_data
         except json.JSONDecodeError as e:
             logging.error(f"Failed to parse ad_report response: {e}")
             return tool_response
