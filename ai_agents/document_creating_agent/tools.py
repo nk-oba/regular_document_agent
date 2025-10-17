@@ -3,6 +3,7 @@ import os
 import sys
 import csv
 import io
+import json
 from datetime import datetime, timedelta
 from typing import Optional, Union
 from google.adk.tools.agent_tool import AgentTool
@@ -461,12 +462,20 @@ async def call_ds_agent(
         await progress_callback("cache_hit", "Returning cached result")
         return tool_context.state.get("ds_agent_output", "No previous data science agent output available")
 
-    input_data = tool_context.state.get("ad_report")
+    input_data = tool_context.state.get("ad_reports", {})
+
+    try:
+        input_data_json = json.dumps(input_data, ensure_ascii=False, indent=2)
+        logging.info(f"[call_ds_agent] Successfully serialized input_data to JSON")
+    except Exception as e:
+        logging.error(f"[call_ds_agent] Failed to serialize input_data: {e}")
+        input_data_json = "{}"
+
     question_with_data = f"""
   Question to answer: {question}
 
-  Actual data to analyze previous question is already in the following:
-  {input_data}
+  Actual data to analyze previous question is already in the following JSON format:
+  {input_data_json}
 
   """
 

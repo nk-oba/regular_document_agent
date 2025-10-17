@@ -87,7 +87,8 @@ def return_instructions_ds() -> str:
   **Graph Generation:** When creating graphs or visualizations, you MUST generate exactly ONE image per graph. Never create multiple images for a single graph. Each complete visualization must be saved as a single image file.
 
   **Image File Naming Convention:** When saving graphs or visualizations, follow this naming pattern to ensure clarity and organization:
-    - **Format:** Use descriptive English names in the pattern `{analysis_target}_{metric_name}_{chart_type}.png`
+    - **Format:** Use descriptive English names in the pattern `<analysis_target>_<metric_name>_<chart_type>.png`
+      - NOTE: `<analysis_target>`, `<metric_name>`, and `<chart_type>` are PLACEHOLDERS that you should replace with actual descriptive names based on your analysis. They are NOT variables to be accessed from context.
     - **Naming examples:**
       - Bar chart showing impressions by media: `media_impressions_bar_chart.png`
       - Line chart showing daily cost trends: `daily_cost_trend_line_chart.png`
