@@ -380,6 +380,59 @@ async def check_mcp_auth_status_tool(
 
 ## ==============================================================================
 
+def _filter_relevant_reports(question: str, ad_reports: dict) -> dict:
+    """
+    Filter ad_reports based on keywords in the question.
+
+    Args:
+        question: User's analysis question
+        ad_reports: Dictionary of all ad reports by type
+
+    Returns:
+        Filtered dictionary containing only relevant report types
+    """
+    if not ad_reports:
+        return {}
+
+    # Normalize question to lowercase for matching
+    question_lower = question.lower()
+
+    # Define keyword mappings for each report type
+    keyword_mappings = {
+        "daily_report": ["日別", "日次", "daily", "day", "日ごと", "デイリー", "時系列", "推移"],
+        "media_report": ["媒体", "メディア", "media", "プラットフォーム", "platform"],
+        "campaign_report": ["キャンペーン", "campaign", "施策"],
+        "keyword_report": ["キーワード", "keyword", "検索語", "検索ワード"],
+        "search_query_report": ["検索クエリ", "search query", "クエリ", "query", "検索語句"]
+    }
+
+    # Find matching report types
+    matched_types = set()
+    for report_type, keywords in keyword_mappings.items():
+        if any(keyword in question_lower for keyword in keywords):
+            matched_types.add(report_type)
+
+    # If no specific type is mentioned, include all available reports
+    if not matched_types:
+        logging.info(f"[_filter_relevant_reports] No specific report type detected in question. Including all {len(ad_reports)} report types.")
+        return ad_reports
+
+    # Filter reports to only include matched types
+    filtered_reports = {
+        report_type: records
+        for report_type, records in ad_reports.items()
+        if report_type in matched_types
+    }
+
+    total_original = sum(len(records) for records in ad_reports.values())
+    total_filtered = sum(len(records) for records in filtered_reports.values())
+
+    logging.info(f"[_filter_relevant_reports] Filtered reports: {list(matched_types)} "
+                 f"({total_filtered}/{total_original} records)")
+
+    return filtered_reports
+
+
 # Configuration consideration agent call
 async def call_playwright_agent(
     ad_report_data: dict,
@@ -462,7 +515,11 @@ async def call_ds_agent(
         await progress_callback("cache_hit", "Returning cached result")
         return tool_context.state.get("ds_agent_output", "No previous data science agent output available")
 
-    input_data = tool_context.state.get("ad_reports", {})
+    # Get all ad_reports from state
+    all_ad_reports = tool_context.state.get("ad_reports", {})
+
+    # Filter reports based on question keywords
+    input_data = _filter_relevant_reports(question, all_ad_reports)
 
     try:
         input_data_json = json.dumps(input_data, ensure_ascii=False, indent=2)

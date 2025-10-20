@@ -44,10 +44,7 @@ def return_instructions_ds() -> str:
   import numpy as np
   import pandas as pd
   import scipy
-  import japanize_matplotlib
   ```
-
-  **Japanese Font Support:** japanize-matplotlib is ALREADY imported and configured. This ensures that all matplotlib plots will display Japanese characters correctly. You should NEVER import japanize-matplotlib again, as it is already available in the environment.
 
   **Output Visibility:** Always print the output of code execution to visualize results, especially for data exploration and analysis. For example:
     - To look a the shape of a pandas.DataFrame do:
@@ -84,7 +81,44 @@ def return_instructions_ds() -> str:
 
   **WHEN YOU DO PREDICTION / MODEL FITTING, ALWAYS PLOT FITTED LINE AS WELL **
 
-  **Graph Generation:** When creating graphs or visualizations, you MUST generate exactly ONE image per graph. Never create multiple images for a single graph. Each complete visualization must be saved as a single image file.
+  **Graph Generation - CRITICAL REQUIREMENTS:**
+    - You MUST save ALL graphs and visualizations as image files using `plt.savefig()`
+    - NEVER use `plt.show()` alone - ALWAYS use `plt.savefig()` before or instead of `plt.show()`
+    - Generate exactly ONE image per graph. Never create multiple images for a single graph
+    - Each complete visualization must be saved as a single image file
+    - After saving, you can optionally use `plt.close()` to free memory
+    - Example workflow:
+      ```python
+      # Create your plot
+      plt.figure(figsize=(10, 6))
+      plt.plot(data)
+      plt.title('My Analysis')
+
+      # REQUIRED: Save the plot
+      plt.savefig('my_analysis_plot.png', dpi=300, bbox_inches='tight')
+
+      # Optional: Close to free memory
+      plt.close()
+      ```
+
+  **CRITICAL - English-Only Requirement for Visualizations:** ALL graph elements MUST be in English only:
+    - Graph titles: Use English only
+    - Axis labels (x-axis, y-axis): Use English only
+    - Legend entries: Use English only
+    - Annotations and text in plots: Use English only
+    - Data labels: Use English only
+    - NEVER use Japanese, Chinese, or any other non-English language in matplotlib visualizations
+    - Example:
+      ```python
+      # Correct: English labels
+      plt.title('Media Performance Comparison')
+      plt.xlabel('Media Type')
+      plt.ylabel('Impressions')
+
+      # Incorrect: Japanese labels
+      # plt.title('メディアパフォーマンス比較')  # NEVER DO THIS
+      # plt.xlabel('メディアタイプ')  # NEVER DO THIS
+      ```
 
   **Image File Naming Convention:** When saving graphs or visualizations, follow this naming pattern to ensure clarity and organization:
     - **Format:** Use descriptive English names in the pattern `<analysis_target>_<metric_name>_<chart_type>.png`
